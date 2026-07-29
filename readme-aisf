@@ -1,0 +1,2962 @@
+C:\ws\agent\website-ais\frontend\src\app\core\guards\auth.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../services/auth.service';
+
+/** Functional route guard (Angular 20 style) protecting admin-only routes. */
+export const authGuard: CanActivateFn = () => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated()) {
+    return true;
+  }
+
+  router.navigate(['/login']);
+  return false;
+};
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\guards\role.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../services/auth.service';
+
+/** Functional route guard restricting a route to ROLE_ADMIN only (e.g. user management). */
+export const adminOnlyGuard: CanActivateFn = () => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated() && authService.isAdmin()) {
+    return true;
+  }
+
+  router.navigate(['/admin/dashboard']);
+  return false;
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\interceptors\auth.interceptor.ts
+import { HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { AuthService } from '../services/auth.service';
+
+/** Functional interceptor (Angular 20 style) that attaches the JWT access token. */
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+  const token = authService.getAccessToken();
+
+  if (token && req.url.includes('/api/v1/')) {
+    req = req.clone({
+      setHeaders: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  return next(req);
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\interceptors\error.interceptor.ts
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { Router } from '@angular/router';
+import { catchError, throwError } from 'rxjs';
+import { ApiErrorResponse } from '../models/api-response.model';
+import { AuthService } from '../services/auth.service';
+import { NotificationService } from '../services/notification.service';
+
+/**
+ * Functional interceptor (Angular 20 style) that unwraps the ApiErrorResponse envelope
+ * (see ais_website_instructions.md Section 4B) and surfaces a user-friendly message.
+ */
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+  const notificationService = inject(NotificationService);
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      const apiError = error.error as ApiErrorResponse | undefined;
+      const message = apiError?.message ?? 'Something went wrong. Please try again.';
+      const details = apiError?.details?.length ? ` (${apiError.details.join(', ')})` : '';
+
+      if (error.status === 401) {
+        notificationService.show('Your session has expired. Please log in again.', 'error');
+        if (authService.isAuthenticated()) {
+          authService.logout();
+        } else {
+          router.navigate(['/login']);
+        }
+      } else {
+        notificationService.show(`${message}${details}`, 'error');
+      }
+
+      return throwError(() => error);
+    }),
+  );
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\api-response.model.ts
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+  timestamp?: string;
+}
+
+export interface ApiErrorResponse {
+  success: boolean;
+  errorCode: string;
+  message: string;
+  details: string[];
+  timestamp?: string;
+}
+
+export interface PageResponse<T> {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  page: number;
+  size: number;
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\auth.model.ts
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  username: string;
+  role: string;
+  expiresInMs: number;
+}
+-----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\consultation.model.ts
+export type LeadStatus =
+  | 'NEW'
+  | 'CONTACTED'
+  | 'QUALIFIED'
+  | 'PROPOSAL_SENT'
+  | 'NEGOTIATION'
+  | 'WON'
+  | 'LOST';
+
+export interface ConsultationRequest {
+  organizationName: string;
+  contactPerson: string;
+  mobile: string;
+  email: string;
+  industry: string;
+  organizationSize?: string;
+  requirements?: string;
+  preferredEngagementStep?: string;
+}
+
+export interface ConsultationResponse {
+  id: number;
+  referenceNumber: string;
+  organizationName: string;
+  contactPerson: string;
+  mobile: string;
+  email: string;
+  industry: string;
+  organizationSize?: string;
+  requirements?: string;
+  preferredEngagementStep?: string;
+  status: LeadStatus;
+  internalRemarks?: string;
+  createdDate: string;
+}
+
+export interface UpdateStatusRequest {
+  status: LeadStatus;
+  internalRemarks?: string;
+}
+
+export interface DashboardStats {
+  totalRequests: number;
+  newRequestsLast30Days: number;
+  requestsByIndustry: Record<string, number>;
+  requestsByStatus: Record<string, number>;
+}
+-------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\content.model.ts
+export interface CompanyInfo {
+  id: number;
+  name: string;
+  tagline?: string;
+  mission?: string;
+  vision?: string;
+  founderBio?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  linkedinUrl?: string;
+}
+
+export interface ServiceOffering {
+  id: number;
+  stepNumber: number;
+  title: string;
+  description?: string;
+  deliverables?: string;
+  estimatedDuration?: string;
+  status?: string;
+}
+
+export interface Industry {
+  id: number;
+  name: string;
+  iconUrl?: string;
+  description?: string;
+  painPoints?: string;
+  howAiHelps?: string;
+}
+
+export interface UseCase {
+  id: number;
+  industryId: number;
+  industryName?: string;
+  name: string;
+  problemStatement?: string;
+  proposedSolution?: string;
+  expectedRoi?: string;
+}
+
+export interface CaseStudy {
+  id: number;
+  industryId?: number;
+  industryName?: string;
+  clientType?: string;
+  challenge?: string;
+  solution?: string;
+  techStack?: string;
+  results?: string;
+  publishedDate?: string;
+}
+
+export interface Testimonial {
+  id: number;
+  clientName: string;
+  organization?: string;
+  designation?: string;
+  testimonialText: string;
+  rating?: number;
+}
+
+export interface ContactMessage {
+  id?: number;
+  name: string;
+  email: string;
+  mobile?: string;
+  subject?: string;
+  message: string;
+  createdDate?: string;
+}
+
+export interface HomeContent {
+  companyName: string;
+  tagline?: string;
+  industries: Industry[];
+  services: ServiceOffering[];
+  featuredCaseStudies: CaseStudy[];
+  featuredTestimonials: Testimonial[];
+}
+----------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\admin-content.service.ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import { ServiceOffering, Industry, UseCase, CaseStudy, Testimonial } from '../models/content.model';
+
+/**
+ * Admin-only content management (create/update/delete). Mirrors
+ * AdminContentController on ais-content-service. Delete operations require ROLE_ADMIN
+ * server-side; the UI also hides delete actions for ROLE_EDITOR (see roleGuard usage).
+ */
+@Injectable({ providedIn: 'root' })
+export class AdminContentService {
+  private readonly baseUrl = `${environment.apiUrl}/content/admin`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  createServiceOffering(payload: Partial<ServiceOffering>): Observable<ServiceOffering> {
+    return this.http
+      .post<ApiResponse<ServiceOffering>>(`${this.baseUrl}/services`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  updateServiceOffering(id: number, payload: Partial<ServiceOffering>): Observable<ServiceOffering> {
+    return this.http
+      .put<ApiResponse<ServiceOffering>>(`${this.baseUrl}/services/${id}`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteServiceOffering(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/services/${id}`);
+  }
+
+  createIndustry(payload: Partial<Industry>): Observable<Industry> {
+    return this.http
+      .post<ApiResponse<Industry>>(`${this.baseUrl}/industries`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  updateIndustry(id: number, payload: Partial<Industry>): Observable<Industry> {
+    return this.http
+      .put<ApiResponse<Industry>>(`${this.baseUrl}/industries/${id}`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteIndustry(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/industries/${id}`);
+  }
+
+  createUseCase(payload: Partial<UseCase>): Observable<UseCase> {
+    return this.http
+      .post<ApiResponse<UseCase>>(`${this.baseUrl}/use-cases`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteUseCase(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/use-cases/${id}`);
+  }
+
+  createCaseStudy(payload: Partial<CaseStudy>): Observable<CaseStudy> {
+    return this.http
+      .post<ApiResponse<CaseStudy>>(`${this.baseUrl}/case-studies`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteCaseStudy(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/case-studies/${id}`);
+  }
+
+  createTestimonial(payload: Partial<Testimonial>): Observable<Testimonial> {
+    return this.http
+      .post<ApiResponse<Testimonial>>(`${this.baseUrl}/testimonials`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteTestimonial(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/testimonials/${id}`);
+  }
+}
+-------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\auth.service.ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, computed, signal } from '@angular/core';
+import { Router } from '@angular/router';
+import { Observable, tap } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import { LoginRequest, LoginResponse } from '../models/auth.model';
+
+const ACCESS_TOKEN_KEY = 'ais_access_token';
+const REFRESH_TOKEN_KEY = 'ais_refresh_token';
+const USERNAME_KEY = 'ais_username';
+const ROLE_KEY = 'ais_role';
+
+/**
+ * Centralizes authentication state using Angular Signals (see
+ * ais_website_instructions.md Section 13A). Tokens are persisted to localStorage so a
+ * page refresh does not log the admin out.
+ */
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private readonly baseUrl = `${environment.apiUrl}/auth`;
+
+  private readonly usernameSignal = signal<string | null>(localStorage.getItem(USERNAME_KEY));
+  private readonly roleSignal = signal<string | null>(localStorage.getItem(ROLE_KEY));
+
+  readonly username = this.usernameSignal.asReadonly();
+  readonly role = this.roleSignal.asReadonly();
+  readonly isAuthenticated = computed(() => !!this.usernameSignal());
+  readonly isAdmin = computed(() => this.roleSignal() === 'ROLE_ADMIN');
+
+  constructor(private readonly http: HttpClient, private readonly router: Router) {}
+
+  login(request: LoginRequest): Observable<ApiResponse<LoginResponse>> {
+    return this.http.post<ApiResponse<LoginResponse>>(`${this.baseUrl}/login`, request).pipe(
+      tap((response) => this.storeSession(response.data)),
+    );
+  }
+
+  logout(): void {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(ROLE_KEY);
+    this.usernameSignal.set(null);
+    this.roleSignal.set(null);
+    this.router.navigate(['/login']);
+  }
+
+  getAccessToken(): string | null {
+    return localStorage.getItem(ACCESS_TOKEN_KEY);
+  }
+
+  getRefreshToken(): string | null {
+    return localStorage.getItem(REFRESH_TOKEN_KEY);
+  }
+
+  refresh(): Observable<ApiResponse<LoginResponse>> {
+    return this.http
+      .post<ApiResponse<LoginResponse>>(`${this.baseUrl}/refresh`, {
+        refreshToken: this.getRefreshToken(),
+      })
+      .pipe(tap((response) => this.storeSession(response.data)));
+  }
+
+  private storeSession(data: LoginResponse): void {
+    localStorage.setItem(ACCESS_TOKEN_KEY, data.accessToken);
+    localStorage.setItem(REFRESH_TOKEN_KEY, data.refreshToken);
+    localStorage.setItem(USERNAME_KEY, data.username);
+    localStorage.setItem(ROLE_KEY, data.role);
+    this.usernameSignal.set(data.username);
+    this.roleSignal.set(data.role);
+  }
+}
+----------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\consultation.service.ts
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse, PageResponse } from '../models/api-response.model';
+import {
+  ConsultationRequest,
+  ConsultationResponse,
+  DashboardStats,
+  LeadStatus,
+  UpdateStatusRequest,
+} from '../models/consultation.model';
+
+@Injectable({ providedIn: 'root' })
+export class ConsultationService {
+  private readonly baseUrl = `${environment.apiUrl}/consultation`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  submit(request: ConsultationRequest): Observable<ConsultationResponse> {
+    return this.http
+      .post<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests`, request)
+      .pipe(map((r) => r.data));
+  }
+
+  list(
+    page = 0,
+    size = 10,
+    industry?: string,
+    status?: LeadStatus,
+  ): Observable<PageResponse<ConsultationResponse>> {
+    let params = new HttpParams().set('page', page).set('size', size);
+    if (industry) {
+      params = params.set('industry', industry);
+    }
+    if (status) {
+      params = params.set('status', status);
+    }
+    return this.http
+      .get<ApiResponse<PageResponse<ConsultationResponse>>>(`${this.baseUrl}/requests`, { params })
+      .pipe(map((r) => r.data));
+  }
+
+  getById(id: number): Observable<ConsultationResponse> {
+    return this.http
+      .get<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests/${id}`)
+      .pipe(map((r) => r.data));
+  }
+
+  updateStatus(id: number, request: UpdateStatusRequest): Observable<ConsultationResponse> {
+    return this.http
+      .patch<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests/${id}/status`, request)
+      .pipe(map((r) => r.data));
+  }
+
+  exportCsv(): Observable<Blob> {
+    return this.http.get(`${this.baseUrl}/requests/export`, { responseType: 'blob' });
+  }
+
+  getDashboardStats(): Observable<DashboardStats> {
+    return this.http
+      .get<ApiResponse<DashboardStats>>(`${this.baseUrl}/dashboard/stats`)
+      .pipe(map((r) => r.data));
+  }
+}
+------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\content.service.ts
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import {
+  CaseStudy,
+  CompanyInfo,
+  ContactMessage,
+  HomeContent,
+  Industry,
+  ServiceOffering,
+  Testimonial,
+  UseCase,
+} from '../models/content.model';
+
+/** One service per resource, per ais_website_instructions.md Section 13A. */
+@Injectable({ providedIn: 'root' })
+export class ContentService {
+  private readonly baseUrl = `${environment.apiUrl}/content`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  getHome(): Observable<HomeContent> {
+    return this.http
+      .get<ApiResponse<HomeContent>>(`${this.baseUrl}/home`)
+      .pipe(map((r) => r.data));
+  }
+
+  getAbout(): Observable<CompanyInfo> {
+    return this.http
+      .get<ApiResponse<CompanyInfo>>(`${this.baseUrl}/about`)
+      .pipe(map((r) => r.data));
+  }
+
+  listServices(): Observable<ServiceOffering[]> {
+    return this.http
+      .get<ApiResponse<ServiceOffering[]>>(`${this.baseUrl}/services`)
+      .pipe(map((r) => r.data));
+  }
+
+  listIndustries(): Observable<Industry[]> {
+    return this.http
+      .get<ApiResponse<Industry[]>>(`${this.baseUrl}/industries`)
+      .pipe(map((r) => r.data));
+  }
+
+  getIndustry(id: number): Observable<Industry> {
+    return this.http
+      .get<ApiResponse<Industry>>(`${this.baseUrl}/industries/${id}`)
+      .pipe(map((r) => r.data));
+  }
+
+  listUseCases(industryId?: number): Observable<UseCase[]> {
+    let params = new HttpParams();
+    if (industryId) {
+      params = params.set('industryId', industryId);
+    }
+    return this.http
+      .get<ApiResponse<UseCase[]>>(`${this.baseUrl}/use-cases`, { params })
+      .pipe(map((r) => r.data));
+  }
+
+  listCaseStudies(): Observable<CaseStudy[]> {
+    return this.http
+      .get<ApiResponse<CaseStudy[]>>(`${this.baseUrl}/case-studies`)
+      .pipe(map((r) => r.data));
+  }
+
+  listTestimonials(): Observable<Testimonial[]> {
+    return this.http
+      .get<ApiResponse<Testimonial[]>>(`${this.baseUrl}/testimonials`)
+      .pipe(map((r) => r.data));
+  }
+
+  submitContactMessage(message: ContactMessage): Observable<ContactMessage> {
+    return this.http
+      .post<ApiResponse<ContactMessage>>(`${this.baseUrl}/contact`, message)
+      .pipe(map((r) => r.data));
+  }
+}
+-------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\notification.service.ts
+import { Injectable, signal } from '@angular/core';
+
+export interface Toast {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+/** Lightweight signal-based toast/notification store, used by the error interceptor. */
+@Injectable({ providedIn: 'root' })
+export class NotificationService {
+  private nextId = 1;
+  readonly toasts = signal<Toast[]>([]);
+
+  show(message: string, type: Toast['type'] = 'info'): void {
+    const toast: Toast = { id: this.nextId++, message, type };
+    this.toasts.update((list) => [...list, toast]);
+    setTimeout(() => this.dismiss(toast.id), 5000);
+  }
+
+  dismiss(id: number): void {
+    this.toasts.update((list) => list.filter((t) => t.id !== id));
+  }
+}
+------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\about\about.html
+@if (company(); as c) {
+  <section class="container py-5">
+    <h1 class="mb-4">About {{ c.name }}</h1>
+    <p class="lead">{{ c.tagline }}</p>
+
+    <div class="row g-4 mt-2">
+      <div class="col-md-6">
+        <h4>Our Mission</h4>
+        <p>{{ c.mission }}</p>
+      </div>
+      <div class="col-md-6">
+        <h4>Our Vision</h4>
+        <p>{{ c.vision }}</p>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <h4>Founder Profile</h4>
+      <p>{{ c.founderBio }}</p>
+    </div>
+
+    <div class="card border-0 shadow-sm mt-4">
+      <div class="card-body">
+        <h5 class="card-title">Get in Touch</h5>
+        <p class="mb-1">{{ c.address }}</p>
+        <p class="mb-1">{{ c.phone }}</p>
+        <p class="mb-1">{{ c.email }}</p>
+        @if (c.linkedinUrl) {
+          <a [href]="c.linkedinUrl" target="_blank" rel="noopener">LinkedIn Profile</a>
+        }
+      </div>
+    </div>
+  </section>
+}
+------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\about\about.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { CompanyInfo } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-about',
+  standalone: true,
+  templateUrl: './about.html',
+})
+export class About implements OnInit {
+  readonly company = signal<CompanyInfo | null>(null);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.getAbout().subscribe((data) => this.company.set(data));
+  }
+}
+------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\content-management\content-management.html
+<section class="container py-5">
+  <h1 class="mb-4">Content Management</h1>
+  <p class="text-muted">
+    Manage Service Offerings and Testimonials here. Industries, Use Cases, and Case Studies
+    follow the same create/delete pattern against the content service admin API.
+  </p>
+
+  <div class="row g-4">
+    <div class="col-md-6">
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Add Service Offering</h5>
+          <form [formGroup]="serviceForm" (ngSubmit)="createService()">
+            <div class="mb-2">
+              <label class="form-label">Step Number</label>
+              <input type="number" class="form-control" formControlName="stepNumber" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Title</label>
+              <input type="text" class="form-control" formControlName="title" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Description</label>
+              <textarea class="form-control" rows="2" formControlName="description"></textarea>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Deliverables</label>
+              <input type="text" class="form-control" formControlName="deliverables" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Estimated Duration</label>
+              <input type="text" class="form-control" formControlName="estimatedDuration" />
+            </div>
+            <button type="submit" class="btn btn-dark w-100">Add Service</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Existing Services</h5>
+          <ul class="list-group list-group-flush">
+            @for (service of services(); track service.id) {
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Step {{ service.stepNumber }} - {{ service.title }}</span>
+                <button type="button" class="btn btn-sm btn-outline-danger" (click)="deleteService(service.id)">
+                  Delete
+                </button>
+              </li>
+            }
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Add Testimonial</h5>
+          <form [formGroup]="testimonialForm" (ngSubmit)="createTestimonial()">
+            <div class="mb-2">
+              <label class="form-label">Client Name</label>
+              <input type="text" class="form-control" formControlName="clientName" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Organization</label>
+              <input type="text" class="form-control" formControlName="organization" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Designation</label>
+              <input type="text" class="form-control" formControlName="designation" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Testimonial</label>
+              <textarea class="form-control" rows="3" formControlName="testimonialText"></textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Rating (1-5)</label>
+              <input type="number" class="form-control" formControlName="rating" min="1" max="5" />
+            </div>
+            <button type="submit" class="btn btn-dark w-100">Add Testimonial</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Existing Testimonials</h5>
+          <ul class="list-group list-group-flush">
+            @for (t of testimonials(); track t.id) {
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>{{ t.clientName }} ({{ t.organization }})</span>
+                <button type="button" class="btn btn-sm btn-outline-danger" (click)="deleteTestimonial(t.id)">
+                  Delete
+                </button>
+              </li>
+            }
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\content-management\content-management.ts
+import { Component, OnInit, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ContentService } from '../../../core/services/content.service';
+import { AdminContentService } from '../../../core/services/admin-content.service';
+import { NotificationService } from '../../../core/services/notification.service';
+import { ServiceOffering, Testimonial } from '../../../core/models/content.model';
+
+/**
+ * Simplified admin content management screen (time-boxed design decision, see
+ * TECHNICAL_SPEC.md): demonstrates the CRUD pattern for Service Offerings and
+ * Testimonials. Industries, Use Cases, and Case Studies follow the identical pattern
+ * against AdminContentService and can be added as additional tabs later.
+ */
+@Component({
+  selector: 'app-content-management',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './content-management.html',
+})
+export class ContentManagement implements OnInit {
+  private readonly fb = inject(FormBuilder);
+  private readonly contentService = inject(ContentService);
+  private readonly adminContentService = inject(AdminContentService);
+  private readonly notificationService = inject(NotificationService);
+
+  readonly services = signal<ServiceOffering[]>([]);
+  readonly testimonials = signal<Testimonial[]>([]);
+
+  readonly serviceForm = this.fb.group({
+    stepNumber: [1, [Validators.required]],
+    title: ['', [Validators.required]],
+    description: [''],
+    deliverables: [''],
+    estimatedDuration: [''],
+  });
+
+  readonly testimonialForm = this.fb.group({
+    clientName: ['', [Validators.required]],
+    organization: [''],
+    designation: [''],
+    testimonialText: ['', [Validators.required]],
+    rating: [5, [Validators.required, Validators.min(1), Validators.max(5)]],
+  });
+
+  ngOnInit(): void {
+    this.loadServices();
+    this.loadTestimonials();
+  }
+
+  loadServices(): void {
+    this.contentService.listServices().subscribe((data) => this.services.set(data));
+  }
+
+  loadTestimonials(): void {
+    this.contentService.listTestimonials().subscribe((data) => this.testimonials.set(data));
+  }
+
+  createService(): void {
+    if (this.serviceForm.invalid) {
+      this.serviceForm.markAllAsTouched();
+      return;
+    }
+    this.adminContentService.createServiceOffering(this.serviceForm.getRawValue() as Partial<ServiceOffering>).subscribe(() => {
+      this.notificationService.show('Service offering created', 'success');
+      this.serviceForm.reset({ stepNumber: 1 });
+      this.loadServices();
+    });
+  }
+
+  deleteService(id: number): void {
+    this.adminContentService.deleteServiceOffering(id).subscribe(() => {
+      this.notificationService.show('Service offering deleted', 'success');
+      this.loadServices();
+    });
+  }
+
+  createTestimonial(): void {
+    if (this.testimonialForm.invalid) {
+      this.testimonialForm.markAllAsTouched();
+      return;
+    }
+    this.adminContentService.createTestimonial(this.testimonialForm.getRawValue() as Partial<Testimonial>).subscribe(() => {
+      this.notificationService.show('Testimonial created', 'success');
+      this.testimonialForm.reset({ rating: 5 });
+      this.loadTestimonials();
+    });
+  }
+
+  deleteTestimonial(id: number): void {
+    this.adminContentService.deleteTestimonial(id).subscribe(() => {
+      this.notificationService.show('Testimonial deleted', 'success');
+      this.loadTestimonials();
+    });
+  }
+}
+--------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\dashboard\dashboard.html
+<section class="container py-5">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Admin Dashboard</h1>
+    <div class="d-flex gap-2">
+      <a routerLink="/admin/leads" class="btn btn-outline-dark">Manage Leads</a>
+      <a routerLink="/admin/content" class="btn btn-outline-dark">Manage Content</a>
+    </div>
+  </div>
+
+  @if (stats(); as s) {
+    <div class="row g-4 mb-5">
+      <div class="col-md-4">
+        <div class="card border-0 shadow-sm text-center">
+          <div class="card-body">
+            <h2 class="mb-0">{{ s.totalRequests }}</h2>
+            <p class="text-muted mb-0">Total Consultation Requests</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card border-0 shadow-sm text-center">
+          <div class="card-body">
+            <h2 class="mb-0">{{ s.newRequestsLast30Days }}</h2>
+            <p class="text-muted mb-0">New Requests (Last 30 Days)</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+          <div class="card-body">
+            <h5 class="card-title">Requests by Industry</h5>
+            <ul class="list-group list-group-flush">
+              @for (entry of objectEntries(s.requestsByIndustry); track entry[0]) {
+                <li class="list-group-item d-flex justify-content-between">
+                  <span>{{ entry[0] }}</span>
+                  <span class="fw-semibold">{{ entry[1] }}</span>
+                </li>
+              }
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+          <div class="card-body">
+            <h5 class="card-title">Requests by Status</h5>
+            <ul class="list-group list-group-flush">
+              @for (entry of objectEntries(s.requestsByStatus); track entry[0]) {
+                <li class="list-group-item d-flex justify-content-between">
+                  <span>{{ entry[0] }}</span>
+                  <span class="fw-semibold">{{ entry[1] }}</span>
+                </li>
+              }
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\dashboard\dashboard.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ConsultationService } from '../../../core/services/consultation.service';
+import { DashboardStats } from '../../../core/models/consultation.model';
+
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './dashboard.html',
+})
+export class Dashboard implements OnInit {
+  readonly stats = signal<DashboardStats | null>(null);
+
+  constructor(private readonly consultationService: ConsultationService) {}
+
+  ngOnInit(): void {
+    this.consultationService.getDashboardStats().subscribe((data) => this.stats.set(data));
+  }
+
+  objectEntries(obj: Record<string, number> | undefined): [string, number][] {
+    return obj ? Object.entries(obj) : [];
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\leads-management\leads-management.html
+<section class="container py-5">
+  <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h1>Consultation Requests</h1>
+    <div class="d-flex gap-2 align-items-center">
+      <select class="form-select" [(ngModel)]="statusFilter" (ngModelChange)="onFilterChange()">
+        <option value="">All Statuses</option>
+        @for (status of statuses; track status) {
+          <option [value]="status">{{ status }}</option>
+        }
+      </select>
+      <button type="button" class="btn btn-outline-dark" (click)="exportCsv()">Export CSV</button>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Reference #</th>
+          <th>Organization</th>
+          <th>Contact</th>
+          <th>Industry</th>
+          <th>Status</th>
+          <th>Received</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (lead of leads(); track lead.id) {
+          <tr>
+            <td>{{ lead.referenceNumber }}</td>
+            <td>{{ lead.organizationName }}</td>
+            <td>{{ lead.contactPerson }}<br /><small class="text-muted">{{ lead.email }}</small></td>
+            <td>{{ lead.industry }}</td>
+            <td>
+              <select
+                class="form-select form-select-sm"
+                [ngModel]="lead.status"
+                (ngModelChange)="updateStatus(lead, $event)"
+              >
+                @for (status of statuses; track status) {
+                  <option [value]="status">{{ status }}</option>
+                }
+              </select>
+            </td>
+            <td>{{ lead.createdDate | date: 'medium' }}</td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="6" class="text-center text-muted py-4">No consultation requests found.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mt-3">
+    <span class="text-muted small">Total: {{ totalElements() }}</span>
+    <div class="btn-group">
+      <button type="button" class="btn btn-outline-secondary" (click)="previousPage()">Previous</button>
+      <button type="button" class="btn btn-outline-secondary" (click)="nextPage()">Next</button>
+    </div>
+  </div>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\leads-management\leads-management.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { ConsultationService } from '../../../core/services/consultation.service';
+import { ConsultationResponse, LeadStatus } from '../../../core/models/consultation.model';
+
+@Component({
+  selector: 'app-leads-management',
+  standalone: true,
+  imports: [FormsModule, DatePipe],
+  templateUrl: './leads-management.html',
+})
+export class LeadsManagement implements OnInit {
+  readonly leads = signal<ConsultationResponse[]>([]);
+  readonly totalElements = signal(0);
+  readonly page = signal(0);
+  readonly pageSize = 10;
+  readonly statusFilter = signal<LeadStatus | ''>('');
+
+  readonly statuses: LeadStatus[] = [
+    'NEW',
+    'CONTACTED',
+    'QUALIFIED',
+    'PROPOSAL_SENT',
+    'NEGOTIATION',
+    'WON',
+    'LOST',
+  ];
+
+  constructor(private readonly consultationService: ConsultationService) {}
+
+  ngOnInit(): void {
+    this.load();
+  }
+
+  load(): void {
+    this.consultationService
+      .list(this.page(), this.pageSize, undefined, this.statusFilter() || undefined)
+      .subscribe((data) => {
+        this.leads.set(data.content);
+        this.totalElements.set(data.totalElements);
+      });
+  }
+
+  onFilterChange(): void {
+    this.page.set(0);
+    this.load();
+  }
+
+  updateStatus(lead: ConsultationResponse, newStatus: LeadStatus): void {
+    this.consultationService.updateStatus(lead.id, { status: newStatus }).subscribe(() => {
+      this.load();
+    });
+  }
+
+  nextPage(): void {
+    if ((this.page() + 1) * this.pageSize < this.totalElements()) {
+      this.page.update((p) => p + 1);
+      this.load();
+    }
+  }
+
+  previousPage(): void {
+    if (this.page() > 0) {
+      this.page.update((p) => p - 1);
+      this.load();
+    }
+  }
+
+  exportCsv(): void {
+    this.consultationService.exportCsv().subscribe((blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'consultation-requests.csv';
+      link.click();
+      window.URL.revokeObjectURL(url);
+    });
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\case-studies\case-studies.html
+<section class="container py-5">
+  <h1 class="text-center mb-5">Case Studies</h1>
+
+  <div class="row g-4">
+    @for (cs of caseStudies(); track cs.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <span class="badge bg-secondary mb-2">{{ cs.industryName }}</span>
+            <h5 class="card-title">{{ cs.clientType }}</h5>
+            <p class="card-text small"><strong>Challenge:</strong> {{ cs.challenge }}</p>
+            <p class="card-text small"><strong>Solution:</strong> {{ cs.solution }}</p>
+            <p class="card-text small text-muted"><strong>Tech Stack:</strong> {{ cs.techStack }}</p>
+            <p class="card-text small text-success"><strong>Results:</strong> {{ cs.results }}</p>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\case-studies\case-studies.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { CaseStudy } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-case-studies',
+  standalone: true,
+  templateUrl: './case-studies.html',
+})
+export class CaseStudies implements OnInit {
+  readonly caseStudies = signal<CaseStudy[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listCaseStudies().subscribe((data) => this.caseStudies.set(data));
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\consultation\consultation.html
+<section class="container py-5" style="max-width: 700px">
+  <h1 class="text-center mb-2">Request a Consultation</h1>
+  <p class="text-center text-muted mb-4">
+    Tell us about your organization and we'll get back to you with a tailored AI agent proposal.
+  </p>
+
+  @if (referenceNumber(); as ref) {
+    <div class="alert alert-success">
+      Thank you! Your consultation request has been submitted. Your reference number is
+      <strong>{{ ref }}</strong>. We will reach out to you shortly.
+    </div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Organization Name *</label>
+      <input type="text" class="form-control" formControlName="organizationName" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Contact Person *</label>
+      <input type="text" class="form-control" formControlName="contactPerson" />
+    </div>
+
+    <div class="row">
+      <div class="col-md-6 mb-3">
+        <label class="form-label">Mobile *</label>
+        <input type="text" class="form-control" formControlName="mobile" placeholder="+919876543210" />
+        @if (form.controls.mobile.invalid && form.controls.mobile.touched) {
+          <div class="text-danger small">Enter a valid mobile number.</div>
+        }
+      </div>
+      <div class="col-md-6 mb-3">
+        <label class="form-label">Email *</label>
+        <input type="email" class="form-control" formControlName="email" />
+      </div>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Industry *</label>
+      <select class="form-select" formControlName="industry">
+        <option value="" disabled selected>Select an industry</option>
+        @for (industry of industries; track industry) {
+          <option [value]="industry">{{ industry }}</option>
+        }
+      </select>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Organization Size</label>
+      <input type="text" class="form-control" formControlName="organizationSize" placeholder="e.g. 500-1000 students" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Current Challenges / Requirements</label>
+      <textarea class="form-control" rows="4" formControlName="requirements"></textarea>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Preferred Engagement Step</label>
+      <select class="form-select" formControlName="preferredEngagementStep">
+        <option value="" disabled selected>Select an option</option>
+        @for (step of engagementSteps; track step) {
+          <option [value]="step">{{ step }}</option>
+        }
+      </select>
+    </div>
+
+    <button type="submit" class="btn btn-info w-100 text-dark fw-semibold" [disabled]="submitting()">
+      @if (submitting()) { Submitting... } @else { Submit Request }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\consultation\consultation.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ConsultationService } from '../../core/services/consultation.service';
+
+@Component({
+  selector: 'app-consultation',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './consultation.html',
+})
+export class Consultation {
+  private readonly fb = inject(FormBuilder);
+  private readonly consultationService = inject(ConsultationService);
+
+  readonly submitting = signal(false);
+  readonly referenceNumber = signal<string | null>(null);
+
+  readonly industries = ['College', 'School', 'Factory', 'Shopping Mall', 'Other'];
+  readonly engagementSteps = ['Design Only', 'Full End-to-End', 'Custom'];
+
+  readonly form = this.fb.group({
+    organizationName: ['', [Validators.required]],
+    contactPerson: ['', [Validators.required]],
+    mobile: ['', [Validators.required, Validators.pattern(/^\+?[0-9]{7,15}$/)]],
+    email: ['', [Validators.required, Validators.email]],
+    industry: ['', [Validators.required]],
+    organizationSize: [''],
+    requirements: [''],
+    preferredEngagementStep: [''],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.consultationService.submit(this.form.getRawValue() as any).subscribe({
+      next: (response) => {
+        this.submitting.set(false);
+        this.referenceNumber.set(response.referenceNumber);
+        this.form.reset();
+      },
+      error: () => this.submitting.set(false),
+    });
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\contact\contact.html
+<section class="container py-5" style="max-width: 700px">
+  <h1 class="text-center mb-4">Contact Us</h1>
+
+  @if (submitted()) {
+    <div class="alert alert-success">Thank you! Your message has been sent successfully.</div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Name *</label>
+      <input type="text" class="form-control" formControlName="name" />
+      @if (form.controls.name.invalid && form.controls.name.touched) {
+        <div class="text-danger small">Name is required.</div>
+      }
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Email *</label>
+      <input type="email" class="form-control" formControlName="email" />
+      @if (form.controls.email.invalid && form.controls.email.touched) {
+        <div class="text-danger small">A valid email is required.</div>
+      }
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Mobile</label>
+      <input type="text" class="form-control" formControlName="mobile" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Subject</label>
+      <input type="text" class="form-control" formControlName="subject" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Message *</label>
+      <textarea class="form-control" rows="4" formControlName="message"></textarea>
+      @if (form.controls.message.invalid && form.controls.message.touched) {
+        <div class="text-danger small">Message is required.</div>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-dark w-100" [disabled]="submitting()">
+      @if (submitting()) { Sending... } @else { Send Message }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\contact\contact.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ContentService } from '../../core/services/content.service';
+import { NotificationService } from '../../core/services/notification.service';
+
+@Component({
+  selector: 'app-contact',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './contact.html',
+})
+export class Contact {
+  private readonly fb = inject(FormBuilder);
+  private readonly contentService = inject(ContentService);
+  private readonly notificationService = inject(NotificationService);
+
+  readonly submitted = signal(false);
+  readonly submitting = signal(false);
+
+  readonly form = this.fb.group({
+    name: ['', [Validators.required]],
+    email: ['', [Validators.required, Validators.email]],
+    mobile: [''],
+    subject: [''],
+    message: ['', [Validators.required]],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.contentService.submitContactMessage(this.form.getRawValue() as any).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.submitted.set(true);
+        this.notificationService.show('Message sent successfully. We will get back to you soon.', 'success');
+        this.form.reset();
+      },
+      error: () => this.submitting.set(false),
+    });
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.html
+<section class="hero bg-dark text-light py-5">
+  <div class="container py-5 text-center">
+    <h1 class="display-4 fw-bold mb-3">AI Agents for Smarter Organizations</h1>
+    <p class="lead col-lg-8 mx-auto">
+      AIS helps colleges, schools, factories, and shopping malls increase ROI, speed up
+      operations, and reduce dependency on manual workforce through custom-built AI agents.
+    </p>
+    <a routerLink="/consultation" class="btn btn-info btn-lg text-dark fw-semibold mt-3">Request a Free Consultation</a>
+  </div>
+</section>
+
+@if (loading()) {
+  <div class="container py-5 text-center">
+    <div class="spinner-border text-primary" role="status"></div>
+  </div>
+} @else if (content(); as home) {
+  <section class="container py-5">
+    <h2 class="text-center mb-4">Industries We Serve</h2>
+    <div class="row g-4">
+      @for (industry of home.industries; track industry.id) {
+        <div class="col-md-3 col-sm-6">
+          <a [routerLink]="['/industries', industry.id]" class="text-decoration-none">
+            <div class="card h-100 shadow-sm text-center border-0">
+              <div class="card-body">
+                <h5 class="card-title">{{ industry.name }}</h5>
+                <p class="card-text text-muted small">{{ industry.description }}</p>
+              </div>
+            </div>
+          </a>
+        </div>
+      }
+    </div>
+  </section>
+
+  <section class="bg-light py-5">
+    <div class="container">
+      <h2 class="text-center mb-4">Our Engagement Process</h2>
+      <div class="row g-4">
+        @for (service of home.services; track service.id) {
+          <div class="col-md-3 col-sm-6">
+            <div class="card h-100 border-0 shadow-sm">
+              <div class="card-body">
+                <span class="badge bg-info text-dark mb-2">Step {{ service.stepNumber }}</span>
+                <h5 class="card-title">{{ service.title }}</h5>
+                <p class="card-text small text-muted">{{ service.description }}</p>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+      <div class="text-center mt-4">
+        <a routerLink="/services" class="btn btn-outline-dark">See Full Service Details</a>
+      </div>
+    </div>
+  </section>
+
+  @if (home.featuredCaseStudies.length > 0) {
+    <section class="container py-5">
+      <h2 class="text-center mb-4">Featured Case Studies</h2>
+      <div class="row g-4">
+        @for (cs of home.featuredCaseStudies; track cs.id) {
+          <div class="col-md-4">
+            <div class="card h-100 shadow-sm border-0">
+              <div class="card-body">
+                <h6 class="text-info">{{ cs.clientType }}</h6>
+                <p class="card-text small">{{ cs.challenge }}</p>
+                <p class="card-text small text-muted"><strong>Result:</strong> {{ cs.results }}</p>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+      <div class="text-center mt-4">
+        <a routerLink="/case-studies" class="btn btn-outline-dark">View All Case Studies</a>
+      </div>
+    </section>
+  }
+
+  @if (home.featuredTestimonials.length > 0) {
+    <section class="bg-light py-5">
+      <div class="container">
+        <h2 class="text-center mb-4">What Our Clients Say</h2>
+        <div class="row g-4">
+          @for (t of home.featuredTestimonials; track t.id) {
+            <div class="col-md-4">
+              <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                  <p class="card-text fst-italic">&ldquo;{{ t.testimonialText }}&rdquo;</p>
+                  <p class="card-text mb-0 fw-semibold">{{ t.clientName }}</p>
+                  <p class="card-text small text-muted">{{ t.designation }}, {{ t.organization }}</p>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    </section>
+  }
+}
+-------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.scss
+.hero {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ContentService } from '../../core/services/content.service';
+import { HomeContent } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-home',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './home.html',
+  styleUrl: './home.scss',
+})
+export class Home implements OnInit {
+  readonly content = signal<HomeContent | null>(null);
+  readonly loading = signal(true);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.getHome().subscribe({
+      next: (data) => {
+        this.content.set(data);
+        this.loading.set(false);
+      },
+      error: () => this.loading.set(false),
+    });
+  }
+}
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industry-detail\industry-detail.html
+@if (industry(); as ind) {
+  <section class="container py-5">
+    <a routerLink="/industries" class="btn btn-link ps-0">&larr; Back to Industries</a>
+    <h1>{{ ind.name }}</h1>
+    <p class="lead">{{ ind.description }}</p>
+    <p><strong>Common Pain Points:</strong> {{ ind.painPoints }}</p>
+    <p><strong>How AI Agents Help:</strong> {{ ind.howAiHelps }}</p>
+
+    <h3 class="mt-5 mb-3">AI Agent Use Cases for {{ ind.name }}</h3>
+    <div class="row g-4">
+      @for (uc of useCases(); track uc.id) {
+        <div class="col-md-6">
+          <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+              <h5 class="card-title">{{ uc.name }}</h5>
+              <p class="card-text small"><strong>Problem:</strong> {{ uc.problemStatement }}</p>
+              <p class="card-text small"><strong>Solution:</strong> {{ uc.proposedSolution }}</p>
+              <p class="card-text small text-success"><strong>Expected ROI:</strong> {{ uc.expectedRoi }}</p>
+            </div>
+          </div>
+        </div>
+      } @empty {
+        <p class="text-muted">No use cases published yet for this industry.</p>
+      }
+    </div>
+  </section>
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industry-detail\industry-detail.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ContentService } from '../../../core/services/content.service';
+import { Industry, UseCase } from '../../../core/models/content.model';
+
+@Component({
+  selector: 'app-industry-detail',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './industry-detail.html',
+})
+export class IndustryDetail implements OnInit {
+  readonly industry = signal<Industry | null>(null);
+  readonly useCases = signal<UseCase[]>([]);
+
+  constructor(
+    private readonly route: ActivatedRoute,
+    private readonly contentService: ContentService,
+  ) {}
+
+  ngOnInit(): void {
+    const id = Number(this.route.snapshot.paramMap.get('id'));
+    this.contentService.getIndustry(id).subscribe((data) => this.industry.set(data));
+    this.contentService.listUseCases(id).subscribe((data) => this.useCases.set(data));
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industries.html
+<section class="container py-5">
+  <h1 class="text-center mb-2">Industries We Serve</h1>
+  <p class="text-center text-muted mb-5">
+    We tailor AI agents to the unique challenges of each industry we work with.
+  </p>
+
+  <div class="row g-4">
+    @for (industry of industries(); track industry.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <h4 class="card-title">{{ industry.name }}</h4>
+            <p class="card-text">{{ industry.description }}</p>
+            <p class="card-text small text-muted"><strong>Pain Points:</strong> {{ industry.painPoints }}</p>
+            <p class="card-text small text-muted"><strong>How AI Helps:</strong> {{ industry.howAiHelps }}</p>
+            <a [routerLink]="['/industries', industry.id]" class="btn btn-sm btn-outline-dark mt-2">
+              View AI Agent Use Cases
+            </a>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industries.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ContentService } from '../../core/services/content.service';
+import { Industry } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-industries',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './industries.html',
+})
+export class Industries implements OnInit {
+  readonly industries = signal<Industry[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listIndustries().subscribe((data) => this.industries.set(data));
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\login\login.html
+<section class="container py-5" style="max-width: 420px">
+  <h1 class="text-center mb-4">Admin Login</h1>
+
+  @if (errorMessage(); as err) {
+    <div class="alert alert-danger">{{ err }}</div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Username</label>
+      <input type="text" class="form-control" formControlName="username" autocomplete="username" />
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Password</label>
+      <input type="password" class="form-control" formControlName="password" autocomplete="current-password" />
+    </div>
+    <button type="submit" class="btn btn-dark w-100" [disabled]="submitting()">
+      @if (submitting()) { Logging in... } @else { Login }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\login\login.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router } from '@angular/router';
+import { AuthService } from '../../core/services/auth.service';
+
+@Component({
+  selector: 'app-login',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './login.html',
+})
+export class Login {
+  private readonly fb = inject(FormBuilder);
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly submitting = signal(false);
+  readonly errorMessage = signal<string | null>(null);
+
+  readonly form = this.fb.group({
+    username: ['', [Validators.required]],
+    password: ['', [Validators.required]],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.errorMessage.set(null);
+    this.authService.login(this.form.getRawValue() as any).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.router.navigate(['/admin/dashboard']);
+      },
+      error: () => {
+        this.submitting.set(false);
+        this.errorMessage.set('Invalid username or password.');
+      },
+    });
+  }
+}
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\services\services.html
+<section class="container py-5">
+  <h1 class="text-center mb-2">Our Services</h1>
+  <p class="text-center text-muted mb-5">
+    Every AIS engagement follows the same proven 4-step process, from architecture design
+    through a fully working, tested, deployed solution.
+  </p>
+
+  <div class="row g-4">
+    @for (service of services(); track service.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <span class="badge bg-info text-dark mb-2">Step {{ service.stepNumber }}</span>
+            <h4 class="card-title">{{ service.title }}</h4>
+            <p class="card-text">{{ service.description }}</p>
+            @if (service.deliverables) {
+              <p class="card-text"><strong>Deliverables:</strong> {{ service.deliverables }}</p>
+            }
+            @if (service.estimatedDuration) {
+              <p class="card-text text-muted small"><strong>Estimated Duration:</strong> {{ service.estimatedDuration }}</p>
+            }
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\services\services.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { ServiceOffering } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-services',
+  standalone: true,
+  templateUrl: './services.html',
+})
+export class Services implements OnInit {
+  readonly services = signal<ServiceOffering[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listServices().subscribe((data) => this.services.set(data));
+  }
+}
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.html
+
+<div class="toast-stack position-fixed top-0 end-0 p-3" style="z-index: 1080">
+  @for (toast of notificationService.toasts(); track toast.id) {
+    <div
+      class="toast show align-items-center border-0 mb-2"
+      [class.text-bg-danger]="toast.type === 'error'"
+      [class.text-bg-success]="toast.type === 'success'"
+      [class.text-bg-info]="toast.type === 'info'"
+    >
+      <div class="d-flex">
+        <div class="toast-body">{{ toast.message }}</div>
+        <button
+          type="button"
+          class="btn-close btn-close-white me-2 m-auto"
+          (click)="notificationService.dismiss(toast.id)"
+          aria-label="Close"
+        ></button>
+      </div>
+    </div>
+  }
+</div>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.scss
+
+.toast-stack {
+  max-width: 350px;
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.ts
+import { Component } from '@angular/core';
+import { NotificationService } from '../../../core/services/notification.service';
+
+@Component({
+  selector: 'app-toast-container',
+  standalone: true,
+  templateUrl: './toast-container.html',
+  styleUrl: './toast-container.scss',
+})
+export class ToastContainer {
+  constructor(readonly notificationService: NotificationService) {}
+}
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.html
+<footer class="bg-dark text-light py-5 mt-auto">
+  <div class="container">
+    <div class="row g-4">
+      <div class="col-md-4">
+        <h5>AIS - Artificial Intelligent Solutions</h5>
+        <p class="text-secondary">
+          Building smart, AI-enabled organizations. We design and build custom AI agents
+          for colleges, schools, factories, and shopping malls.
+        </p>
+      </div>
+      <div class="col-md-4">
+        <h6>Quick Links</h6>
+        <ul class="list-unstyled">
+          <li><a routerLink="/services" class="footer-link">Services</a></li>
+          <li><a routerLink="/industries" class="footer-link">Industries We Serve</a></li>
+          <li><a routerLink="/case-studies" class="footer-link">Case Studies</a></li>
+          <li><a routerLink="/consultation" class="footer-link">Request a Consultation</a></li>
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <h6>Contact</h6>
+        <ul class="list-unstyled text-secondary">
+          <li>Bengaluru, India</li>
+          <li>contact&#64;ais-solutions.example.com</li>
+          <li>+91-98765-00000</li>
+        </ul>
+      </div>
+    </div>
+    <hr class="border-secondary" />
+    <p class="text-secondary text-center mb-0 small">&copy; {{ year }} AIS - Artificial Intelligent Solutions. All rights reserved.</p>
+  </div>
+</footer>
+--------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.scss
+.footer-link {
+  color: #adb5bd;
+  text-decoration: none;
+
+  &:hover {
+    color: #fff;
+    text-decoration: underline;
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.ts
+
+import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
+
+@Component({
+  selector: 'app-footer',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './footer.html',
+  styleUrl: './footer.scss',
+})
+export class Footer {
+  readonly year = new Date().getFullYear();
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.html
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
+  <div class="container">
+    <a class="navbar-brand fw-bold" routerLink="/">AIS <span class="text-info">Artificial Intelligent Solutions</span></a>
+    <button
+      class="navbar-toggler"
+      type="button"
+      data-bs-toggle="collapse"
+      data-bs-target="#aisNavbar"
+      aria-controls="aisNavbar"
+      aria-expanded="false"
+      aria-label="Toggle navigation"
+    >
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="aisNavbar">
+      <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
+        <li class="nav-item"><a class="nav-link" routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Home</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/about" routerLinkActive="active">About</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/services" routerLinkActive="active">Services</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/industries" routerLinkActive="active">Industries</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/case-studies" routerLinkActive="active">Case Studies</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/contact" routerLinkActive="active">Contact</a></li>
+        <li class="nav-item">
+          <a class="btn btn-info btn-sm text-dark fw-semibold ms-lg-2" routerLink="/consultation">Request Consultation</a>
+        </li>
+        @if (authService.isAuthenticated()) {
+          <li class="nav-item"><a class="nav-link" routerLink="/admin/dashboard" routerLinkActive="active">Dashboard</a></li>
+          <li class="nav-item">
+            <button type="button" class="btn btn-outline-light btn-sm ms-lg-2" (click)="logout()">
+              Logout ({{ authService.username() }})
+            </button>
+          </li>
+        } @else {
+          <li class="nav-item"><a class="nav-link" routerLink="/login" routerLinkActive="active">Admin Login</a></li>
+        }
+      </ul>
+    </div>
+  </div>
+</nav>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.scss
+.navbar-brand {
+  font-size: 1.25rem;
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.ts
+import { Component } from '@angular/core';
+import { RouterLink, RouterLinkActive } from '@angular/router';
+import { AuthService } from '../../../core/services/auth.service';
+
+@Component({
+  selector: 'app-header',
+  standalone: true,
+  imports: [RouterLink, RouterLinkActive],
+  templateUrl: './header.html',
+  styleUrl: './header.scss',
+})
+export class Header {
+  constructor(readonly authService: AuthService) {}
+
+  logout(): void {
+    this.authService.logout();
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.config.ts
+import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+
+import { routes } from './app.routes';
+import { authInterceptor } from './core/interceptors/auth.interceptor';
+import { errorInterceptor } from './core/interceptors/error.interceptor';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideBrowserGlobalErrorListeners(),
+    provideZoneChangeDetection({ eventCoalescing: true }),
+    provideRouter(routes, withComponentInputBinding()),
+    provideHttpClient(withInterceptors([authInterceptor, errorInterceptor])),
+  ]
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.html
+<app-header />
+
+<main class="flex-grow-1">
+  <router-outlet />
+</main>
+
+<app-footer />
+
+<app-toast-container />
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.routes.ts
+import { Routes } from '@angular/router';
+import { authGuard } from './core/guards/auth.guard';
+import { adminOnlyGuard } from './core/guards/role.guard';
+
+export const routes: Routes = [
+  {
+    path: '',
+    loadComponent: () => import('./features/home/home').then((m) => m.Home),
+  },
+  {
+    path: 'about',
+    loadComponent: () => import('./features/about/about').then((m) => m.About),
+  },
+  {
+    path: 'services',
+    loadComponent: () => import('./features/services/services').then((m) => m.Services),
+  },
+  {
+    path: 'industries',
+    loadComponent: () => import('./features/industries/industries').then((m) => m.Industries),
+  },
+  {
+    path: 'industries/:id',
+    loadComponent: () =>
+      import('./features/industries/industry-detail/industry-detail').then((m) => m.IndustryDetail),
+  },
+  {
+    path: 'case-studies',
+    loadComponent: () => import('./features/case-studies/case-studies').then((m) => m.CaseStudies),
+  },
+  {
+    path: 'contact',
+    loadComponent: () => import('./features/contact/contact').then((m) => m.Contact),
+  },
+  {
+    path: 'consultation',
+    loadComponent: () => import('./features/consultation/consultation').then((m) => m.Consultation),
+  },
+  {
+    path: 'login',
+    loadComponent: () => import('./features/login/login').then((m) => m.Login),
+  },
+  {
+    path: 'admin/dashboard',
+    canActivate: [authGuard],
+    loadComponent: () => import('./features/admin/dashboard/dashboard').then((m) => m.Dashboard),
+  },
+  {
+    path: 'admin/leads',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/admin/leads-management/leads-management').then((m) => m.LeadsManagement),
+  },
+  {
+    path: 'admin/content',
+    canActivate: [authGuard, adminOnlyGuard],
+    loadComponent: () =>
+      import('./features/admin/content-management/content-management').then(
+        (m) => m.ContentManagement,
+      ),
+  },
+  {
+    path: '**',
+    redirectTo: '',
+  },
+];
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.scss
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.spec.ts
+import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { App } from './app';
+
+describe('App', () => {
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [App],
+      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+  });
+
+  it('should create the app', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance;
+    expect(app).toBeTruthy();
+  });
+
+  it('should render the header brand', () => {
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('.navbar-brand')?.textContent).toContain('AIS');
+  });
+});
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.ts
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { Header } from './shared/layouts/header/header';
+import { Footer } from './shared/layouts/footer/footer';
+import { ToastContainer } from './shared/components/toast-container/toast-container';
+
+@Component({
+  selector: 'app-root',
+  imports: [RouterOutlet, Header, Footer, ToastContainer],
+  templateUrl: './app.html',
+  styleUrl: './app.scss'
+})
+export class App {}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.cloudrun.ts
+export const environment = {
+  production: true,
+  // Relative path: the browser calls the SAME Cloud Run URL that served the page.
+  // nginx (running inside the same container, see Dockerfile.cloudrun) forwards
+  // anything under /api/ to the gateway process on localhost:8080. No separate API
+  // domain, no CORS setup, and no Cloud Run service-to-service auth needed - everything
+  // lives in one container.
+  apiUrl: '/api/v1',
+  analyticsEnabled: false,
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.docker.ts
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8080/api/v1',
+  analyticsEnabled: false,
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.gcp.ts
+export const environment = {
+  production: true,
+  apiUrl: 'https://ais-gateway-url/api/v1',
+  analyticsEnabled: true,
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.local.ts
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8080/api/v1',
+  analyticsEnabled: false,
+};
+-------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.ts
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8080/api/v1',
+  analyticsEnabled: false,
+};
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AIS - Artificial Intelligent Solutions</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\main.ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { appConfig } from './app/app.config';
+import { App } from './app/app';
+
+bootstrapApplication(App, appConfig)
+  .catch((err) => console.error(err));
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\styles.scss
+/* You can add global styles to this file, and also import other style files */
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\.editorconfig
+# Editor configuration, see https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.ts]
+quote_type = single
+ij_typescript_use_double_quotes = false
+
+[*.md]
+max_line_length = off
+trim_trailing_whitespace = false
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\angular.json
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": {
+    "packageManager": "npm"
+  },
+  "newProjectRoot": "projects",
+  "projects": {
+    "ais-frontend": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": {
+          "style": "scss"
+        }
+      },
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/main.ts",
+            "polyfills": [
+              "zone.js"
+            ],
+            "tsConfig": "tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "node_modules/bootstrap/dist/css/bootstrap.min.css",
+              "src/styles.scss"
+            ],
+            "scripts": [
+              "node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"
+            ]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "1MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "8kB"
+                }
+              ],
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.gcp.ts"
+                }
+              ]
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            },
+            "local": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.local.ts"
+                }
+              ]
+            },
+            "docker": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.docker.ts"
+                }
+              ]
+            },
+            "gcp": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.gcp.ts"
+                }
+              ]
+            },
+            "cloudrun": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.cloudrun.ts"
+                }
+              ]
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "ais-frontend:build:production"
+            },
+            "development": {
+              "buildTarget": "ais-frontend:build:development"
+            },
+            "local": {
+              "buildTarget": "ais-frontend:build:local"
+            }
+          },
+          "defaultConfiguration": "local"
+        },
+        "extract-i18n": {
+          "builder": "@angular/build:extract-i18n"
+        },
+        "test": {
+          "builder": "@angular/build:karma",
+          "options": {
+            "polyfills": [
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "tsconfig.spec.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "src/styles.scss"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\Dockerfile
+# Multi-stage build for the Angular 20 SPA. Build context: ./frontend
+# (see docker-compose.yml, which builds this with no args -> BUILD_CONFIGURATION=docker).
+
+FROM node:22-alpine AS build
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+# Which frontend/src/environments/environment.*.ts file gets baked into the bundle.
+ARG BUILD_CONFIGURATION=docker
+RUN npx ng build --configuration=${BUILD_CONFIGURATION}
+
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /workspace/dist/ais-frontend/browser /usr/share/nginx/html
+EXPOSE 80
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\nginx.conf
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location ~* \.(?:css|js|map|jpe?g|gif|png|svg|ico|woff2?)$ {
+        expires 30d;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # Angular client-side routing: serve index.html for any unmatched path so deep
+    # links (e.g. /services/consulting) work on refresh/direct navigation.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\package.json
+{
+  "name": "ais-frontend",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "overrides": [
+      {
+        "files": "*.html",
+        "options": {
+          "parser": "angular"
+        }
+      }
+    ]
+  },
+  "private": true,
+  "dependencies": {
+    "@angular/common": "20.3.26",
+    "@angular/compiler": "20.3.26",
+    "@angular/core": "20.3.26",
+    "@angular/forms": "20.3.26",
+    "@angular/platform-browser": "20.3.26",
+    "@angular/router": "20.3.26",
+    "bootstrap": "5.3.3",
+    "rxjs": "7.8.1",
+    "tslib": "2.7.0",
+    "zone.js": "0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "20.3.32",
+    "@angular/cli": "20.3.32",
+    "@angular/compiler-cli": "20.3.26",
+    "@types/jasmine": "5.1.4",
+    "jasmine-core": "5.9.0",
+    "karma": "6.4.4",
+    "karma-chrome-launcher": "3.2.0",
+    "karma-coverage": "2.2.1",
+    "karma-jasmine": "5.1.0",
+    "karma-jasmine-html-reporter": "2.1.0",
+    "typescript": "5.9.2"
+  }
+}
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\README.md
+# AisFrontendTmp
+
+This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 20.3.32.
+
+## Development server
+
+To start a local development server, run:
+
+```bash
+ng serve
+```
+
+Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+
+## Code scaffolding
+
+Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+
+```bash
+ng generate component component-name
+```
+
+For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
+
+```bash
+ng generate --help
+```
+
+## Building
+
+To build the project run:
+
+```bash
+ng build
+```
+
+This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+
+## Running unit tests
+
+To execute unit tests with the [Karma](https://karma-runner.github.io) test runner, use the following command:
+
+```bash
+ng test
+```
+
+## Running end-to-end tests
+
+For end-to-end (e2e) testing, run:
+
+```bash
+ng e2e
+```
+
+Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
+
+## Additional Resources
+
+For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.app.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app",
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "preserve"
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "typeCheckHostBindings": true,
+    "strictTemplates": true
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.app.json"
+    },
+    {
+      "path": "./tsconfig.spec.json"
+    }
+  ]
+}
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.spec.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/spec",
+    "types": [
+      "jasmine"
+    ]
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.spec.ts"
+  ]
+}
+==================================================================================
+C:\ws\agent\website-ais\scripts\gcp\deploy-single-cloud-run.ps1
+<#
+.SYNOPSIS
+  Builds the single all-in-one container (Dockerfile.cloudrun) and deploys it as ONE
+  Cloud Run service containing the frontend + gateway + auth + content + consultation,
+  connected to the Cloud SQL instance created by setup-cloud-sql.ps1.
+
+.NOTES
+  Run setup-cloud-sql.ps1 once first and note the connection name it prints.
+  Requires gcloud CLI authenticated. Docker not required locally - Cloud Build builds
+  remotely from source using Dockerfile.cloudrun.
+#>
+
+param(
+    [Parameter(Mandatory = $true)][string]$ProjectId,
+    [Parameter(Mandatory = $true)][string]$CloudSqlConnectionName, # PROJECT:REGION:INSTANCE
+    [string]$Region = "us-central1",
+    [string]$Repo = "ais-images",
+    [string]$ServiceName = "ais-website",
+    [string]$DbName = "ais_db"
+)
+
+$ErrorActionPreference = "Stop"
+gcloud config set project $ProjectId | Out-Null
+
+$registry = "$Region-docker.pkg.dev/$ProjectId/$Repo"
+$image = "$registry/${ServiceName}:latest"
+
+$repoExists = gcloud artifacts repositories describe $Repo --location=$Region --format="value(name)" 2>$null
+if (-not $repoExists) {
+    gcloud artifacts repositories create $Repo --repository-format=docker --location=$Region
+}
+
+function Build-SocketFactoryUrl {
+    param([string]$Db)
+    return "jdbc:postgresql:///$Db" +
+           "?cloudSqlInstance=$CloudSqlConnectionName" +
+           "&socketFactory=com.google.cloud.sql.postgres.SocketFactory" +
+           "&ipTypes=PUBLIC"
+}
+$dbUrl = Build-SocketFactoryUrl -Db $DbName
+
+Write-Host "Building $image (this can take a few minutes: 4 Maven modules + Angular)..." -ForegroundColor Cyan
+$buildConfig = New-TemporaryFile
+@"
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.cloudrun', '-t', '$image', '.']
+images: ['$image']
+options:
+  machineType: 'E2_HIGHCPU_8'
+timeout: '1800s'
+"@ | Set-Content -Path $buildConfig -Encoding utf8
+gcloud builds submit . --config=$buildConfig
+Remove-Item $buildConfig -ErrorAction SilentlyContinue
+
+Write-Host "Deploying $ServiceName ..." -ForegroundColor Cyan
+gcloud run deploy $ServiceName `
+    --image=$image `
+    --region=$Region `
+    --platform=managed `
+    --port=8080 `
+    --cpu=2 `
+    --memory=2Gi `
+    --cpu-boost `
+    --timeout=300 `
+    --min-instances=0 `
+    --max-instances=3 `
+    --add-cloudsql-instances=$CloudSqlConnectionName `
+    --set-env-vars="AUTH_DB_URL=$dbUrl,AUTH_DB_USERNAME=ais_auth_user,CONTENT_DB_URL=$dbUrl,CONTENT_DB_USERNAME=ais_content_user,CONSULTATION_DB_URL=$dbUrl,CONSULTATION_DB_USERNAME=ais_consultation_user,CORS_ALLOWED_ORIGINS=*" `
+    --set-secrets="AUTH_DB_PASSWORD=ais-auth-db-password:latest,CONTENT_DB_PASSWORD=ais-content-db-password:latest,CONSULTATION_DB_PASSWORD=ais-consultation-db-password:latest,JWT_SECRET=ais-jwt-secret:latest" `
+    --allow-unauthenticated `
+    --ingress=all
+
+$serviceUrl = gcloud run services describe $ServiceName --region=$Region --format="value(status.url)"
+Write-Host ""
+Write-Host "Deployed: $serviceUrl" -ForegroundColor Green
+Write-Host "Optional hardening: once you have a custom domain (or are happy using this" -ForegroundColor Yellow
+Write-Host "*.run.app URL), tighten CORS to it instead of '*':" -ForegroundColor Yellow
+Write-Host "  gcloud run services update $ServiceName --region=$Region --update-env-vars=CORS_ALLOWED_ORIGINS=$serviceUrl" -ForegroundColor Yellow
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\scripts\gcp\setup-cloud-sql.ps1
+<#
+.SYNOPSIS
+  One-time provisioning of the Cloud SQL for PostgreSQL instance used by the AIS site's
+  3 data-owning services (auth, content, consultation). Run this once per environment.
+
+.NOTES
+  Requires: gcloud CLI authenticated (`gcloud auth login`) with an active project set.
+  Mirrors scripts/init-db.sql (same ais_db database, same 3 per-service DB roles), so
+  local Docker Compose and Cloud Run behave the same way.
+#>
+
+param(
+    [Parameter(Mandatory = $true)][string]$ProjectId,
+    [string]$Region = "us-central1",
+    [string]$InstanceName = "ais-postgres",
+    [string]$DbName = "ais_db",
+    [string]$DbTier = "db-f1-micro" # cheapest shared-core tier - plenty for a few thousand requests/day
+)
+
+$ErrorActionPreference = "Stop"
+
+gcloud config set project $ProjectId | Out-Null
+
+Write-Host "Enabling required APIs..." -ForegroundColor Cyan
+gcloud services enable sqladmin.googleapis.com secretmanager.googleapis.com run.googleapis.com `
+    artifactregistry.googleapis.com cloudbuild.googleapis.com
+
+Write-Host "Creating Cloud SQL instance '$InstanceName' (PostgreSQL 16, $DbTier)..." -ForegroundColor Cyan
+gcloud sql instances create $InstanceName `
+    --database-version=POSTGRES_16 `
+    --tier=$DbTier `
+    --region=$Region `
+    --storage-auto-increase `
+    --availability-type=zonal
+
+Write-Host "Creating database '$DbName'..." -ForegroundColor Cyan
+gcloud sql databases create $DbName --instance=$InstanceName
+
+function New-SecretIfMissing {
+    param([string]$SecretId, [string]$PlainValue)
+    $exists = gcloud secrets describe $SecretId --format="value(name)" 2>$null
+    if (-not $exists) {
+        $PlainValue | gcloud secrets create $SecretId --data-file=- --replication-policy=automatic
+        Write-Host "Created secret '$SecretId'." -ForegroundColor Green
+    }
+    else {
+        Write-Host "Secret '$SecretId' already exists, skipping." -ForegroundColor Yellow
+    }
+}
+
+function New-RandomPassword {
+    -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+}
+
+$roles = @(
+    @{ User = "ais_auth_user"; Secret = "ais-auth-db-password" },
+    @{ User = "ais_content_user"; Secret = "ais-content-db-password" },
+    @{ User = "ais_consultation_user"; Secret = "ais-consultation-db-password" }
+)
+
+foreach ($role in $roles) {
+    $password = New-RandomPassword
+    Write-Host "Creating DB user '$($role.User)'..." -ForegroundColor Cyan
+    gcloud sql users create $role.User --instance=$InstanceName --password=$password
+    New-SecretIfMissing -SecretId $role.Secret -PlainValue $password
+}
+
+# Shared JWT signing secret - used by all 4 services inside the single container.
+New-SecretIfMissing -SecretId "ais-jwt-secret" -PlainValue (New-RandomPassword)
+
+$connectionName = gcloud sql instances describe $InstanceName --format="value(connectionName)"
+Write-Host ""
+Write-Host "Cloud SQL instance connection name: $connectionName" -ForegroundColor Green
+Write-Host "Save this value - it is required by deploy-single-cloud-run.ps1 (-CloudSqlConnectionName)." -ForegroundColor Green
+
+Write-Host ""
+Write-Host "MANUAL STEP REQUIRED: grant each role CREATE on '$DbName' so Flyway can" -ForegroundColor Yellow
+Write-Host "auto-create its schema (auth_schema/content_schema/consultation_schema), e.g.:" -ForegroundColor Yellow
+Write-Host "  gcloud sql connect $InstanceName --user=postgres --database=$DbName" -ForegroundColor Yellow
+Write-Host "  GRANT ALL PRIVILEGES ON DATABASE $DbName TO ais_auth_user;" -ForegroundColor Yellow
+Write-Host "  GRANT ALL PRIVILEGES ON DATABASE $DbName TO ais_content_user;" -ForegroundColor Yellow
+Write-Host "  GRANT ALL PRIVILEGES ON DATABASE $DbName TO ais_consultation_user;" -ForegroundColor Yellow
+-------------------------------------------
+C:\ws\agent\website-ais\scripts\init-db.sql
+-- Creates the per-service database roles used by application-docker.yml / application-gcp.yml.
+-- Runs automatically on first PostgreSQL container startup (docker-entrypoint-initdb.d).
+-- Flyway (running as each service starts) creates its own schema and tables.
+
+CREATE USER ais_auth_user WITH PASSWORD 'ais_auth_pass';
+CREATE USER ais_content_user WITH PASSWORD 'ais_content_pass';
+CREATE USER ais_consultation_user WITH PASSWORD 'ais_consultation_pass';
+
+GRANT ALL PRIVILEGES ON DATABASE ais_db TO ais_auth_user;
+GRANT ALL PRIVILEGES ON DATABASE ais_db TO ais_content_user;
+GRANT ALL PRIVILEGES ON DATABASE ais_db TO ais_consultation_user;
+==================================================================
+C:\ws\agent\website-ais\docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ais-postgres
+    environment:
+      POSTGRES_DB: ais_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ais_postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ais-auth-service:
+    build:
+      context: ./backend
+      dockerfile: ais-auth-service/Dockerfile
+    container_name: ais-auth-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-must-be-32-bytes-minimum}
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ais-content-service:
+    build:
+      context: ./backend
+      dockerfile: ais-content-service/Dockerfile
+    container_name: ais-content-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-must-be-32-bytes-minimum}
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ais-consultation-service:
+    build:
+      context: ./backend
+      dockerfile: ais-consultation-service/Dockerfile
+    container_name: ais-consultation-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-must-be-32-bytes-minimum}
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ais-gateway-service:
+    build:
+      context: ./backend
+      dockerfile: ais-gateway-service/Dockerfile
+    container_name: ais-gateway-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-must-be-32-bytes-minimum}
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ais-auth-service
+      - ais-content-service
+      - ais-consultation-service
+
+  ais-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ais-frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - ais-gateway-service
+
+volumes:
+  ais_postgres_data:
+----------------------------------------------
+C:\ws\agent\website-ais\Dockerfile.cloudrun
+# Single-container build: packages all 4 Spring Boot services + the Angular frontend +
+# nginx into ONE image, so the whole AIS site runs as ONE Cloud Run service. Intended
+# for low/medium traffic (a few thousand requests/day) where operational simplicity and
+# minimum cost matter more than independent per-service scaling.
+#
+# Build context is the REPO ROOT (not backend/ or frontend/ individually):
+#   docker build -f Dockerfile.cloudrun -t ais-allinone .
+
+FROM maven:3.9-eclipse-temurin-17 AS backend-build
+WORKDIR /workspace
+COPY backend/pom.xml backend/pom.xml
+COPY backend/ais-common backend/ais-common
+COPY backend/ais-auth-service backend/ais-auth-service
+COPY backend/ais-content-service backend/ais-content-service
+COPY backend/ais-consultation-service backend/ais-consultation-service
+COPY backend/ais-gateway-service backend/ais-gateway-service
+WORKDIR /workspace/backend
+RUN mvn -q -DskipTests package
+
+FROM node:22-alpine AS frontend-build
+WORKDIR /workspace
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npx ng build --configuration=cloudrun
+
+FROM eclipse-temurin:17-jre-alpine
+RUN apk add --no-cache nginx gettext && mkdir -p /run/nginx
+WORKDIR /app
+
+COPY --from=backend-build /workspace/backend/ais-auth-service/target/ais-auth-service-*.jar auth-service.jar
+COPY --from=backend-build /workspace/backend/ais-content-service/target/ais-content-service-*.jar content-service.jar
+COPY --from=backend-build /workspace/backend/ais-consultation-service/target/ais-consultation-service-*.jar consultation-service.jar
+COPY --from=backend-build /workspace/backend/ais-gateway-service/target/ais-gateway-service-*.jar gateway-service.jar
+COPY --from=frontend-build /workspace/dist/ais-frontend/browser /usr/share/nginx/html
+
+COPY nginx.cloudrun.conf.template /etc/nginx/templates/default.conf.template
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV PORT=8080
+EXPOSE 8080
+ENTRYPOINT ["/app/entrypoint.sh"]
+------------------------------------------
+C:\ws\agent\website-ais\entrypoint.sh
+#!/bin/sh
+# Starts all 4 Spring Boot services on localhost, waits for the gateway to become
+# ready, then runs nginx in the foreground (the process Cloud Run actually monitors)
+# listening on Cloud Run's $PORT and reverse-proxying /api/ to the gateway.
+#
+# Trade-off worth knowing: this script does not restart an individual JVM if it
+# crashes after startup - only a whole-container restart (e.g. a new Cloud Run
+# revision, or Cloud Run replacing an unhealthy instance) would recover it. Fine for a
+# low-traffic marketing site; ask for a supervisor (e.g. tini + a watchdog loop) if you
+# need per-process auto-restart.
+set -e
+
+echo "Starting ais-auth-service..."
+SPRING_PROFILES_ACTIVE=gcp \
+  DB_URL="$AUTH_DB_URL" DB_USERNAME="$AUTH_DB_USERNAME" DB_PASSWORD="$AUTH_DB_PASSWORD" \
+  JWT_SECRET="$JWT_SECRET" \
+  java -jar /app/auth-service.jar &
+
+echo "Starting ais-content-service..."
+SPRING_PROFILES_ACTIVE=gcp \
+  DB_URL="$CONTENT_DB_URL" DB_USERNAME="$CONTENT_DB_USERNAME" DB_PASSWORD="$CONTENT_DB_PASSWORD" \
+  JWT_SECRET="$JWT_SECRET" \
+  java -jar /app/content-service.jar &
+
+echo "Starting ais-consultation-service..."
+SPRING_PROFILES_ACTIVE=gcp \
+  DB_URL="$CONSULTATION_DB_URL" DB_USERNAME="$CONSULTATION_DB_USERNAME" DB_PASSWORD="$CONSULTATION_DB_PASSWORD" \
+  JWT_SECRET="$JWT_SECRET" \
+  java -jar /app/consultation-service.jar &
+
+echo "Starting ais-gateway-service..."
+# Deliberately NOT setting SPRING_PROFILES_ACTIVE=gcp here: the gateway's base
+# application.yml already defaults AUTH_SERVICE_URI/CONTENT_SERVICE_URI/
+# CONSULTATION_SERVICE_URI to http://localhost:8081/8083/8082 - exactly right for this
+# single-container layout - so no route env vars need to be set at all.
+JWT_SECRET="$JWT_SECRET" CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-*}" \
+  java -jar /app/gateway-service.jar &
+
+echo "Waiting for the gateway to become ready..."
+for i in $(seq 1 90); do
+  if wget -q -O /dev/null http://127.0.0.1:8080/actuator/health 2>/dev/null; then
+    echo "Gateway is up after ${i}s."
+    break
+  fi
+  sleep 1
+done
+
+export PORT="${PORT:-8080}"
+envsubst '${PORT}' < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf
+exec nginx -g 'daemon off;'
+
+----------------------------------------------------------------
+C:\ws\agent\website-ais\nginx.cloudrun.conf.template
+server {
+    listen ${PORT};
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Everything under /api/ goes to the gateway process running on localhost inside
+    # this same container - the gateway then talks to auth/content/consultation, also
+    # on localhost. No other Cloud Run service is involved.
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~* \.(?:css|js|map|jpe?g|gif|png|svg|ico|woff2?)$ {
+        expires 30d;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # Angular client-side routing: serve index.html for any unmatched path.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+
+
+
+
+
