@@ -1,0 +1,2702 @@
+C:\ws\agent\admission\marketing-agent\frontend\src\app\core\guards\auth.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../../services/auth.service';
+
+export const authGuard: CanActivateFn = (_route, state) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  if (auth.isAuthenticated()) {
+    return true;
+  }
+  return router.createUrlTree(['/login'], { queryParams: { returnUrl: state.url } });
+};
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\core\guards\role.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../../services/auth.service';
+
+export const roleGuard: CanActivateFn = (route) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  const allowedRoles = (route.data?.['roles'] as string[] | undefined) ?? [];
+  if (allowedRoles.length === 0 || auth.hasRole(...allowedRoles)) {
+    return true;
+  }
+  return router.createUrlTree(['/dashboard']);
+};
+
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\core\interceptors\auth.interceptor.ts
+import { inject } from '@angular/core';
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { Router } from '@angular/router';
+import { catchError, switchMap, throwError } from 'rxjs';
+import { AuthService } from '../../services/auth.service';
+
+const AUTH_ENDPOINT_PATTERN = /\/api\/v1\/auth\/(login|refresh|register)/;
+
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const auth = inject(AuthService);
+  const router = inject(Router);
+
+  const isAuthEndpoint = AUTH_ENDPOINT_PATTERN.test(req.url);
+  const token = auth.getAccessToken();
+  const authReq = token && !isAuthEndpoint ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : req;
+
+  return next(authReq).pipe(
+    catchError((err: HttpErrorResponse) => {
+      if (err.status === 401 && !isAuthEndpoint && auth.getRefreshToken()) {
+        return auth.refresh().pipe(
+          switchMap(() => {
+            const retried = req.clone({ setHeaders: { Authorization: `Bearer ${auth.getAccessToken()}` } });
+            return next(retried);
+          }),
+          catchError((refreshErr) => {
+            auth.clearTokens();
+            router.navigate(['/login']);
+            return throwError(() => refreshErr);
+          }),
+        );
+      }
+      return throwError(() => err);
+    }),
+  );
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\core\interceptors\mock.interceptor.ts
+import { HttpInterceptorFn, HttpResponse } from '@angular/common/http';
+import { delay, of } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import usersSeed from '../../../mock-data/users.json';
+import coursesSeed from '../../../mock-data/courses.json';
+import campaignsSeed from '../../../mock-data/campaigns.json';
+import leadsSeed from '../../../mock-data/leads.json';
+import leadActivitiesSeed from '../../../mock-data/lead-activities.json';
+import dashboardSeed from '../../../mock-data/dashboard.json';
+import seoTemplate from '../../../mock-data/seo-template.json';
+import socialTemplates from '../../../mock-data/social-templates.json';
+
+/**
+ * Mock API interceptor - active only when environment.useMockData is true.
+ * Lets every feature module be built/tested against realistic JSON fixtures
+ * (frontend/src/mock-data) without a running backend. Flip useMockData to
+ * false (see environments/environment.ts) to resume calling the real API.
+ */
+
+const MOCK_DELAY_MS = 300;
+
+// Mutable in-memory copies so create/update/delete look persisted for the session.
+let courses = structuredClone(coursesSeed) as typeof coursesSeed;
+let campaigns = structuredClone(campaignsSeed) as typeof campaignsSeed;
+let leads = structuredClone(leadsSeed) as typeof leadsSeed;
+const leadActivities: Record<string, any[]> = structuredClone(leadActivitiesSeed);
+
+let nextCourseId = Math.max(...courses.map((c) => c.course_id)) + 1;
+let nextCampaignId = Math.max(...campaigns.map((c) => c.campaign_id)) + 1;
+let nextLeadId = Math.max(...leads.map((l) => l.lead_id)) + 1;
+let nextActivityId = 1000;
+let nextContentId = 1;
+let nextSocialPostId = 1;
+let nextSeoBlogId = 1;
+
+function base64UrlEncode(value: unknown): string {
+  const json = JSON.stringify(value);
+  const base64 = btoa(unescape(encodeURIComponent(json)));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function createMockToken(email: string, role: string, type: 'access' | 'refresh', ttlSeconds: number): string {
+  const header = base64UrlEncode({ alg: 'none', typ: 'JWT' });
+  const now = Math.floor(Date.now() / 1000);
+  const payload = base64UrlEncode({ sub: email, role, type, iat: now, exp: now + ttlSeconds });
+  return `${header}.${payload}.mock-signature`;
+}
+
+function fillTemplate<T>(template: T, replacements: Record<string, string>): T {
+  let json = JSON.stringify(template);
+  for (const [key, value] of Object.entries(replacements)) {
+    json = json.split(`{{${key}}}`).join(value);
+  }
+  return JSON.parse(json) as T;
+}
+
+function jsonResponse(status: number, body: unknown) {
+  return of(new HttpResponse({ status, body })).pipe(delay(MOCK_DELAY_MS));
+}
+
+export const mockInterceptor: HttpInterceptorFn = (req, next) => {
+  if (!environment.useMockData) {
+    return next(req);
+  }
+
+  const url = new URL(req.url, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+  const path = url.pathname;
+  const { method } = req;
+
+  // --- Auth ---
+  if (method === 'POST' && path === '/api/v1/auth/login') {
+    const { email, password } = req.body as { email: string; password: string };
+    const user = usersSeed.find((u) => u.email === email && u.password === password);
+    if (!user) {
+      return jsonResponse(401, { detail: 'Invalid email or password' });
+    }
+    return jsonResponse(200, {
+      access_token: createMockToken(user.email, user.role, 'access', 60 * 60),
+      refresh_token: createMockToken(user.email, user.role, 'refresh', 60 * 60 * 24 * 7),
+      token_type: 'bearer',
+    });
+  }
+  if (method === 'POST' && path === '/api/v1/auth/refresh') {
+    const claims = JSON.parse(decodeURIComponent(atob((req.body as { refresh_token: string }).refresh_token.split('.')[1])));
+    return jsonResponse(200, {
+      access_token: createMockToken(claims.sub, claims.role, 'access', 60 * 60),
+      refresh_token: createMockToken(claims.sub, claims.role, 'refresh', 60 * 60 * 24 * 7),
+      token_type: 'bearer',
+    });
+  }
+  if (method === 'POST' && path === '/api/v1/auth/logout') {
+    return jsonResponse(200, {});
+  }
+
+  // --- Courses ---
+  if (method === 'GET' && path === '/api/v1/courses') {
+    return jsonResponse(200, courses);
+  }
+  if (method === 'POST' && path === '/api/v1/courses') {
+    const created = { course_id: nextCourseId++, status: 'ACTIVE', created_date: new Date().toISOString(), ...(req.body as object) };
+    courses = [...courses, created as (typeof courses)[number]];
+    return jsonResponse(201, created);
+  }
+  let m = path.match(/^\/api\/v1\/courses\/(\d+)$/);
+  if (m && method === 'PUT') {
+    const id = Number(m[1]);
+    const updated = { ...courses.find((c) => c.course_id === id), ...(req.body as object) };
+    courses = courses.map((c) => (c.course_id === id ? (updated as (typeof courses)[number]) : c));
+    return jsonResponse(200, updated);
+  }
+  if (m && method === 'DELETE') {
+    const id = Number(m[1]);
+    courses = courses.filter((c) => c.course_id !== id);
+    return jsonResponse(204, null);
+  }
+
+  // --- Campaigns ---
+  if (method === 'GET' && path === '/api/v1/campaigns') {
+    return jsonResponse(200, campaigns);
+  }
+  if (method === 'POST' && path === '/api/v1/campaigns') {
+    const created = {
+      campaign_id: nextCampaignId++,
+      status: 'DRAFT',
+      created_date: new Date().toISOString(),
+      ...(req.body as object),
+    };
+    campaigns = [...campaigns, created as (typeof campaigns)[number]];
+    return jsonResponse(201, created);
+  }
+  m = path.match(/^\/api\/v1\/campaigns\/(\d+)$/);
+  if (m && method === 'PUT') {
+    const id = Number(m[1]);
+    const updated = { ...campaigns.find((c) => c.campaign_id === id), ...(req.body as object) };
+    campaigns = campaigns.map((c) => (c.campaign_id === id ? (updated as (typeof campaigns)[number]) : c));
+    return jsonResponse(200, updated);
+  }
+  m = path.match(/^\/api\/v1\/campaigns\/(\d+)\/launch$/);
+  if (m && method === 'POST') {
+    return jsonResponse(200, { campaign_id: Number(m[1]), launched: true, ...(req.body as object) });
+  }
+
+  // --- Content ---
+  if (method === 'POST' && path === '/api/v1/content/generate') {
+    return jsonResponse(200, { contentId: nextContentId++, status: 'GENERATED' });
+  }
+
+  // --- SEO ---
+  if (method === 'POST' && path === '/api/v1/seo/generate') {
+    const { keyword } = req.body as { keyword: string };
+    const body = fillTemplate(seoTemplate, { keyword });
+    return jsonResponse(200, { blog_id: nextSeoBlogId++, title: keyword, keyword, slug: keyword.toLowerCase().replace(/\s+/g, '-'), ...body });
+  }
+
+  // --- Social ---
+  if (method === 'POST' && path === '/api/v1/social/post/generate') {
+    const { platform, topic } = req.body as { platform: string; topic: string };
+    const templates = socialTemplates as Record<string, unknown>;
+    const template = templates[platform] ?? templates['default'];
+    const body = fillTemplate(template, { topic });
+    return jsonResponse(200, { ...(body as object), post_id: nextSocialPostId++ });
+  }
+
+  // --- Leads ---
+  if (method === 'GET' && path === '/api/v1/leads') {
+    return jsonResponse(200, leads);
+  }
+  if (method === 'POST' && path === '/api/v1/leads') {
+    const created = {
+      lead_id: nextLeadId++,
+      lead_score: 0,
+      status: 'NEW',
+      assigned_to: null,
+      created_date: new Date().toISOString(),
+      ...(req.body as object),
+    };
+    leads = [...leads, created as (typeof leads)[number]];
+    return jsonResponse(201, created);
+  }
+  m = path.match(/^\/api\/v1\/leads\/(\d+)$/);
+  if (m && method === 'PUT') {
+    const id = Number(m[1]);
+    const updated = { ...leads.find((l) => l.lead_id === id), ...(req.body as object) };
+    leads = leads.map((l) => (l.lead_id === id ? (updated as (typeof leads)[number]) : l));
+    return jsonResponse(200, updated);
+  }
+  m = path.match(/^\/api\/v1\/leads\/(\d+)\/timeline$/);
+  if (m && method === 'GET') {
+    return jsonResponse(200, leadActivities[m[1]] ?? []);
+  }
+  m = path.match(/^\/api\/v1\/leads\/(\d+)\/activity$/);
+  if (m && method === 'POST') {
+    const leadId = Number(m[1]);
+    const activity = { activity_id: nextActivityId++, lead_id: leadId, activity_date: new Date().toISOString(), ...(req.body as object) };
+    leadActivities[m[1]] = [...(leadActivities[m[1]] ?? []), activity];
+    return jsonResponse(201, activity);
+  }
+  m = path.match(/^\/api\/v1\/leads\/(\d+)\/score$/);
+  if (m && method === 'GET') {
+    const lead = leads.find((l) => l.lead_id === Number(m![1]));
+    const score = lead?.lead_score ?? 0;
+    // Mirrors backend/agents/lead_agent/scoring.py:score_band exactly.
+    const band = score <= 30 ? 'Cold' : score <= 60 ? 'Warm' : 'Hot';
+    return jsonResponse(200, { lead_id: Number(m[1]), lead_score: score, band });
+  }
+
+  // --- Analytics ---
+  if (method === 'GET' && path === '/api/v1/analytics/dashboard') {
+    return jsonResponse(200, dashboardSeed);
+  }
+
+  // Unmatched API route in mock mode - fall back to the real backend.
+  return next(req);
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\analytics\analytics.component.html
+<div class="p-6">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-bold">Analytics</h1>
+    <button (click)="exportCsv()" [disabled]="!summary" class="bg-slate-900 text-white text-sm px-4 py-2 rounded disabled:opacity-50">
+      Export CSV
+    </button>
+  </div>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">{{ error }}</div>
+
+  <div *ngIf="summary" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Daily Leads</div>
+      <div class="text-xl font-semibold">{{ summary.daily_leads }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Monthly Leads</div>
+      <div class="text-xl font-semibold">{{ summary.monthly_leads }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Top Course</div>
+      <div class="text-xl font-semibold">{{ summary.top_course || '-' }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Top Campaign</div>
+      <div class="text-xl font-semibold">{{ summary.top_campaign || '-' }}</div>
+    </div>
+  </div>
+
+  <div *ngIf="summary" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div class="bg-white shadow rounded p-4">
+      <h2 class="font-semibold mb-3">Admissions Funnel</h2>
+      <canvas baseChart [data]="funnelChartData" [options]="funnelChartOptions" type="bar"></canvas>
+    </div>
+    <div class="bg-white shadow rounded p-4">
+      <h2 class="font-semibold mb-3">Leads By Source</h2>
+      <canvas baseChart [data]="sourceChartData" type="pie"></canvas>
+    </div>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\analytics\analytics.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { BaseChartDirective } from 'ng2-charts';
+import { ChartConfiguration, ChartData } from 'chart.js';
+import { DashboardService, DashboardSummary } from '../dashboard/dashboard.service';
+
+@Component({
+  selector: 'app-analytics',
+  standalone: true,
+  imports: [CommonModule, BaseChartDirective],
+  templateUrl: './analytics.component.html',
+})
+export class AnalyticsComponent implements OnInit {
+  private readonly dashboardService = inject(DashboardService);
+
+  summary: DashboardSummary | null = null;
+  error: string | null = null;
+
+  sourceChartData: ChartData<'pie'> = { labels: [], datasets: [{ data: [] }] };
+  funnelChartData: ChartData<'bar'> = { labels: [], datasets: [{ data: [], label: 'Count' }] };
+
+  readonly funnelChartOptions: ChartConfiguration<'bar'>['options'] = {
+    responsive: true,
+    indexAxis: 'y',
+    plugins: { legend: { display: false } },
+  };
+
+  ngOnInit(): void {
+    this.dashboardService.getSummary().subscribe({
+      next: (data) => {
+        this.summary = data;
+        this.sourceChartData = {
+          labels: Object.keys(data.leads_by_source),
+          datasets: [{ data: Object.values(data.leads_by_source) }],
+        };
+        this.funnelChartData = {
+          labels: ['Visitors', 'Leads', 'Interested', 'Applications', 'Admissions'],
+          datasets: [
+            {
+              label: 'Admissions Funnel',
+              data: [
+                data.funnel.visitors,
+                data.funnel.leads,
+                data.funnel.interested,
+                data.funnel.applications,
+                data.funnel.admissions,
+              ],
+              backgroundColor: ['#1e293b', '#334155', '#475569', '#64748b', '#94a3b8'],
+            },
+          ],
+        };
+      },
+      error: () => (this.error = 'Unable to load analytics data from the backend.'),
+    });
+  }
+
+  exportCsv(): void {
+    if (!this.summary) {
+      return;
+    }
+    const rows: string[][] = [
+      ['Metric', 'Value'],
+      ['Daily Leads', String(this.summary.daily_leads)],
+      ['Monthly Leads', String(this.summary.monthly_leads)],
+      ['Top Course', this.summary.top_course ?? ''],
+      ['Top Campaign', this.summary.top_campaign ?? ''],
+      ['Funnel: Visitors', String(this.summary.funnel.visitors)],
+      ['Funnel: Leads', String(this.summary.funnel.leads)],
+      ['Funnel: Interested', String(this.summary.funnel.interested)],
+      ['Funnel: Applications', String(this.summary.funnel.applications)],
+      ['Funnel: Admissions', String(this.summary.funnel.admissions)],
+      ...Object.entries(this.summary.leads_by_source).map(([source, count]) => [`Leads by Source: ${source}`, String(count)]),
+    ];
+    const csv = rows.map((row) => row.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'marketing-agent-analytics.csv';
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\auth\login.component.html
+<div class="min-h-screen flex items-center justify-center bg-gray-100 px-4">
+  <form [formGroup]="form" (ngSubmit)="submit()" class="w-full max-w-sm bg-white shadow rounded p-6">
+    <h1 class="text-xl font-bold mb-1">Marketing Agent</h1>
+    <p class="text-sm text-gray-500 mb-6">Sign in to the admin portal</p>
+
+    <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+      {{ error }}
+    </div>
+
+    <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+    <input
+      type="email"
+      formControlName="email"
+      class="w-full border rounded px-3 py-2 mb-1 text-sm"
+      placeholder="you@college.edu"
+    />
+    <div
+      *ngIf="form.controls.email.invalid && form.controls.email.touched"
+      class="text-xs text-red-600 mb-3"
+    >
+      A valid email is required.
+    </div>
+
+    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+    <input type="password" formControlName="password" class="w-full border rounded px-3 py-2 mb-1 text-sm" />
+    <div
+      *ngIf="form.controls.password.invalid && form.controls.password.touched"
+      class="text-xs text-red-600 mb-3"
+    >
+      Password is required.
+    </div>
+
+    <button
+      type="submit"
+      [disabled]="loading"
+      class="w-full mt-3 bg-slate-900 text-white rounded py-2 text-sm font-medium disabled:opacity-50"
+    >
+      {{ loading ? 'Signing in...' : 'Sign in' }}
+    </button>
+  </form>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\auth\login.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { ReactiveFormsModule, FormBuilder, Validators } from '@angular/forms';
+import { ActivatedRoute, Router } from '@angular/router';
+import { AuthService } from '../../services/auth.service';
+
+@Component({
+  selector: 'app-login',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './login.component.html',
+})
+export class LoginComponent {
+  private readonly fb = inject(FormBuilder);
+  private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
+
+  readonly form = this.fb.nonNullable.group({
+    email: ['', [Validators.required, Validators.email]],
+    password: ['', [Validators.required]],
+  });
+
+  loading = false;
+  error: string | null = null;
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.loading = true;
+    this.error = null;
+    const { email, password } = this.form.getRawValue();
+    this.auth.login(email, password).subscribe({
+      next: () => {
+        this.loading = false;
+        const returnUrl = this.route.snapshot.queryParamMap.get('returnUrl') || '/dashboard';
+        this.router.navigateByUrl(returnUrl);
+      },
+      error: () => {
+        this.loading = false;
+        this.error = 'Invalid email or password.';
+      },
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\campaigns\campaigns-list.component.html
+<div class="p-6">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-bold">Campaign Management</h1>
+    <button *ngIf="canWrite()" (click)="openCreateForm()" class="bg-slate-900 text-white text-sm px-4 py-2 rounded">
+      + New Campaign
+    </button>
+  </div>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">{{ error }}</div>
+  <div *ngIf="message" class="mb-4 text-sm text-green-700 bg-green-50 border border-green-200 rounded p-2">
+    {{ message }}
+  </div>
+
+  <div *ngIf="showCreateForm" class="mb-6 bg-white shadow rounded p-4">
+    <h2 class="font-semibold mb-3">New Campaign</h2>
+    <form [formGroup]="createForm" (ngSubmit)="createCampaign()" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Campaign Name</label>
+        <input formControlName="campaign_name" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Campaign Type</label>
+        <select formControlName="campaign_type" class="w-full border rounded px-3 py-2 text-sm">
+          <option *ngFor="let type of campaignTypes" [value]="type">{{ type }}</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
+        <input type="date" formControlName="start_date" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">End Date</label>
+        <input type="date" formControlName="end_date" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Budget</label>
+        <input type="number" formControlName="budget" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div class="md:col-span-2 flex gap-2">
+        <button type="submit" class="bg-slate-900 text-white text-sm px-4 py-2 rounded">Save</button>
+        <button type="button" (click)="showCreateForm = false" class="bg-gray-200 text-sm px-4 py-2 rounded">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="bg-white shadow rounded overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs uppercase text-gray-500">
+        <tr>
+          <th class="px-4 py-2">Name</th>
+          <th class="px-4 py-2">Type</th>
+          <th class="px-4 py-2">Dates</th>
+          <th class="px-4 py-2">Budget</th>
+          <th class="px-4 py-2">Status</th>
+          <th class="px-4 py-2" *ngIf="canWrite()">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <ng-container *ngFor="let campaign of campaigns">
+          <tr class="border-t">
+            <td class="px-4 py-2 font-medium">{{ campaign.campaign_name }}</td>
+            <td class="px-4 py-2">{{ campaign.campaign_type }}</td>
+            <td class="px-4 py-2">{{ campaign.start_date || '-' }} &rarr; {{ campaign.end_date || '-' }}</td>
+            <td class="px-4 py-2">{{ campaign.budget ?? '-' }}</td>
+            <td class="px-4 py-2">
+              <span class="px-2 py-0.5 rounded text-xs bg-gray-100">{{ campaign.status }}</span>
+            </td>
+            <td class="px-4 py-2 space-x-2" *ngIf="canWrite()">
+              <button (click)="editCampaign(campaign)" class="text-blue-600 hover:underline">Edit</button>
+              <button (click)="openLaunch(campaign)" class="text-green-600 hover:underline">Launch</button>
+            </td>
+          </tr>
+          <tr *ngIf="editingId === campaign.campaign_id" class="bg-gray-50 border-t">
+            <td colspan="6" class="px-4 py-3">
+              <form [formGroup]="editForm" (ngSubmit)="saveEdit()" class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Status</label>
+                  <select formControlName="status" class="w-full border rounded px-3 py-2 text-sm">
+                    <option *ngFor="let status of campaignStatuses" [value]="status">{{ status }}</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Start Date</label>
+                  <input type="date" formControlName="start_date" class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">End Date</label>
+                  <input type="date" formControlName="end_date" class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Budget</label>
+                  <input type="number" formControlName="budget" class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+                <div class="flex gap-2">
+                  <button type="submit" class="bg-slate-900 text-white text-sm px-3 py-2 rounded">Save</button>
+                  <button type="button" (click)="cancelEdit()" class="bg-gray-200 text-sm px-3 py-2 rounded">
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </td>
+          </tr>
+          <tr *ngIf="launchingId === campaign.campaign_id" class="bg-gray-50 border-t">
+            <td colspan="6" class="px-4 py-3">
+              <form [formGroup]="launchForm" (ngSubmit)="launch()" class="space-y-3">
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Topic</label>
+                  <input formControlName="topic" class="w-full md:w-1/2 border rounded px-3 py-2 text-sm" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-gray-600 mb-1">Platforms</label>
+                  <div class="flex flex-wrap gap-3">
+                    <label *ngFor="let platform of socialPlatforms" class="text-sm flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        [checked]="launchForm.controls.platforms.value.includes(platform)"
+                        (change)="togglePlatform(platform, $any($event.target).checked)"
+                      />
+                      {{ platform }}
+                    </label>
+                  </div>
+                </div>
+                <div class="flex gap-2">
+                  <button type="submit" class="bg-green-600 text-white text-sm px-3 py-2 rounded">
+                    Run Campaign Workflow
+                  </button>
+                  <button type="button" (click)="cancelLaunch()" class="bg-gray-200 text-sm px-3 py-2 rounded">
+                    Close
+                  </button>
+                </div>
+                <pre *ngIf="launchResult" class="bg-slate-900 text-slate-100 text-xs p-3 rounded overflow-x-auto">{{
+                  launchResult | json
+                }}</pre>
+              </form>
+            </td>
+          </tr>
+        </ng-container>
+        <tr *ngIf="!loading && campaigns.length === 0">
+          <td colspan="6" class="px-4 py-6 text-center text-gray-500">No campaigns found.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\campaigns\campaigns-list.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { AuthService } from '../../services/auth.service';
+import {
+  CAMPAIGN_STATUSES,
+  CAMPAIGN_TYPES,
+  Campaign,
+  CampaignService,
+} from '../../services/campaign.service';
+
+@Component({
+  selector: 'app-campaigns-list',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './campaigns-list.component.html',
+})
+export class CampaignsListComponent implements OnInit {
+  private readonly fb = inject(FormBuilder);
+  private readonly campaignService = inject(CampaignService);
+  readonly auth = inject(AuthService);
+
+  readonly campaignTypes = CAMPAIGN_TYPES;
+  readonly campaignStatuses = CAMPAIGN_STATUSES;
+  readonly socialPlatforms = ['facebook', 'instagram', 'linkedin', 'youtube', 'whatsapp'];
+
+  campaigns: Campaign[] = [];
+  loading = false;
+  error: string | null = null;
+  message: string | null = null;
+
+  showCreateForm = false;
+  editingId: number | null = null;
+  launchingId: number | null = null;
+  launchResult: Record<string, unknown> | null = null;
+
+  readonly createForm = this.fb.nonNullable.group({
+    campaign_name: ['', Validators.required],
+    campaign_type: [this.campaignTypes[0], Validators.required],
+    start_date: [''],
+    end_date: [''],
+    budget: [0],
+  });
+
+  readonly editForm = this.fb.nonNullable.group({
+    status: ['DRAFT'],
+    start_date: [''],
+    end_date: [''],
+    budget: [0],
+  });
+
+  readonly launchForm = this.fb.nonNullable.group({
+    topic: ['', Validators.required],
+    platforms: this.fb.nonNullable.control<string[]>(['instagram', 'facebook']),
+  });
+
+  ngOnInit(): void {
+    this.refresh();
+  }
+
+  canWrite(): boolean {
+    return this.auth.hasRole('ADMIN', 'MARKETING_MANAGER');
+  }
+
+  refresh(): void {
+    this.loading = true;
+    this.campaignService.list().subscribe({
+      next: (data) => {
+        this.campaigns = data;
+        this.loading = false;
+      },
+      error: () => {
+        this.error = 'Unable to load campaigns.';
+        this.loading = false;
+      },
+    });
+  }
+
+  openCreateForm(): void {
+    this.createForm.reset({
+      campaign_name: '',
+      campaign_type: this.campaignTypes[0],
+      start_date: '',
+      end_date: '',
+      budget: 0,
+    });
+    this.showCreateForm = true;
+  }
+
+  createCampaign(): void {
+    if (this.createForm.invalid) {
+      this.createForm.markAllAsTouched();
+      return;
+    }
+    this.campaignService.create(this.createForm.getRawValue()).subscribe({
+      next: () => {
+        this.showCreateForm = false;
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to create campaign.'),
+    });
+  }
+
+  editCampaign(campaign: Campaign): void {
+    this.editingId = campaign.campaign_id;
+    this.editForm.setValue({
+      status: campaign.status,
+      start_date: campaign.start_date ?? '',
+      end_date: campaign.end_date ?? '',
+      budget: campaign.budget ?? 0,
+    });
+  }
+
+  saveEdit(): void {
+    if (!this.editingId) {
+      return;
+    }
+    this.campaignService.update(this.editingId, this.editForm.getRawValue()).subscribe({
+      next: () => {
+        this.editingId = null;
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to update campaign.'),
+    });
+  }
+
+  cancelEdit(): void {
+    this.editingId = null;
+  }
+
+  openLaunch(campaign: Campaign): void {
+    this.launchingId = campaign.campaign_id;
+    this.launchResult = null;
+    this.launchForm.reset({ topic: '', platforms: ['instagram', 'facebook'] });
+  }
+
+  togglePlatform(platform: string, checked: boolean): void {
+    const current = this.launchForm.controls.platforms.value;
+    this.launchForm.controls.platforms.setValue(
+      checked ? [...current, platform] : current.filter((p) => p !== platform),
+    );
+  }
+
+  launch(): void {
+    if (!this.launchingId || this.launchForm.invalid) {
+      this.launchForm.markAllAsTouched();
+      return;
+    }
+    this.message = null;
+    this.error = null;
+    this.campaignService.launch(this.launchingId, this.launchForm.getRawValue()).subscribe({
+      next: (result) => {
+        this.launchResult = result;
+        this.message = 'Campaign launched: Content -> Social -> Publish -> Lead Capture workflow triggered.';
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to launch campaign.'),
+    });
+  }
+
+  cancelLaunch(): void {
+    this.launchingId = null;
+    this.launchResult = null;
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\content\content-generate.component.html
+<div class="p-6 max-w-4xl">
+  <h1 class="text-2xl font-bold mb-4">Content Agent</h1>
+  <p class="text-sm text-gray-500 mb-4">
+    Generate marketing content (blogs, articles, brochures, course/event descriptions, scholarship content).
+  </p>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+    {{ error }}
+  </div>
+
+  <form [formGroup]="form" (ngSubmit)="submit()" class="bg-white shadow rounded p-4 grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Course</label>
+      <input formControlName="course" class="w-full border rounded px-3 py-2 text-sm" placeholder="BCA" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Content Type</label>
+      <select formControlName="content_type" class="w-full border rounded px-3 py-2 text-sm">
+        <option *ngFor="let type of contentTypes" [value]="type">{{ type }}</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Topic</label>
+      <input formControlName="topic" class="w-full border rounded px-3 py-2 text-sm" placeholder="Career after BCA" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Target Audience</label>
+      <input formControlName="targetAudience" class="w-full border rounded px-3 py-2 text-sm" placeholder="12th Students" />
+    </div>
+    <div class="md:col-span-2">
+      <button type="submit" [disabled]="loading" class="bg-slate-900 text-white text-sm px-4 py-2 rounded disabled:opacity-50">
+        {{ loading ? 'Generating...' : 'Generate Content' }}
+      </button>
+    </div>
+  </form>
+
+  <h2 class="font-semibold mb-2">Generation History</h2>
+  <div class="bg-white shadow rounded overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs uppercase text-gray-500">
+        <tr>
+          <th class="px-4 py-2">Content ID</th>
+          <th class="px-4 py-2">Type</th>
+          <th class="px-4 py-2">Course</th>
+          <th class="px-4 py-2">Topic</th>
+          <th class="px-4 py-2">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let entry of history" class="border-t">
+          <td class="px-4 py-2">{{ entry.response.contentId }}</td>
+          <td class="px-4 py-2">{{ entry.content_type }}</td>
+          <td class="px-4 py-2">{{ entry.course }}</td>
+          <td class="px-4 py-2">{{ entry.topic }}</td>
+          <td class="px-4 py-2">
+            <span
+              class="px-2 py-0.5 rounded text-xs"
+              [class.bg-green-100]="entry.response.status === 'SUCCESS'"
+              [class.text-green-700]="entry.response.status === 'SUCCESS'"
+              [class.bg-red-100]="entry.response.status !== 'SUCCESS'"
+              [class.text-red-700]="entry.response.status !== 'SUCCESS'"
+            >
+              {{ entry.response.status }}
+            </span>
+          </td>
+        </tr>
+        <tr *ngIf="history.length === 0">
+          <td colspan="5" class="px-4 py-6 text-center text-gray-500">No content generated yet in this session.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\content\content-generate.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { CONTENT_TYPES, ContentGenerateResponse, ContentService } from '../../services/content.service';
+
+interface HistoryEntry {
+  course: string;
+  topic: string;
+  targetAudience: string;
+  content_type: string;
+  response: ContentGenerateResponse;
+}
+
+@Component({
+  selector: 'app-content-generate',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './content-generate.component.html',
+})
+export class ContentGenerateComponent {
+  private readonly fb = inject(FormBuilder);
+  private readonly contentService = inject(ContentService);
+
+  readonly contentTypes = CONTENT_TYPES;
+  loading = false;
+  error: string | null = null;
+  history: HistoryEntry[] = [];
+
+  readonly form = this.fb.nonNullable.group({
+    course: ['', Validators.required],
+    topic: ['', Validators.required],
+    targetAudience: ['', Validators.required],
+    content_type: ['Article', Validators.required],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.loading = true;
+    this.error = null;
+    const payload = this.form.getRawValue();
+    this.contentService.generate(payload).subscribe({
+      next: (response) => {
+        this.loading = false;
+        this.history.unshift({ ...payload, response });
+      },
+      error: () => {
+        this.loading = false;
+        this.error = 'Content generation failed. Please try again.';
+      },
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\courses\courses-list.component.html
+<div class="p-6">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-bold">College Management &mdash; Courses</h1>
+    <button
+      *ngIf="canWrite()"
+      (click)="openCreateForm()"
+      class="bg-slate-900 text-white text-sm px-4 py-2 rounded"
+    >
+      + New Course
+    </button>
+  </div>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+    {{ error }}
+  </div>
+
+  <div *ngIf="showForm" class="mb-6 bg-white shadow rounded p-4">
+    <h2 class="font-semibold mb-3">{{ editingId ? 'Edit Course' : 'New Course' }}</h2>
+    <form [formGroup]="form" (ngSubmit)="save()" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Course Name</label>
+        <input formControlName="course_name" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Duration</label>
+        <input formControlName="duration" class="w-full border rounded px-3 py-2 text-sm" placeholder="3 Years" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Fees</label>
+        <input type="number" formControlName="fees" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Status</label>
+        <select formControlName="status" class="w-full border rounded px-3 py-2 text-sm">
+          <option value="ACTIVE">ACTIVE</option>
+          <option value="INACTIVE">INACTIVE</option>
+        </select>
+      </div>
+      <div class="md:col-span-2">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Description</label>
+        <textarea formControlName="description" rows="3" class="w-full border rounded px-3 py-2 text-sm"></textarea>
+      </div>
+      <div class="md:col-span-2 flex gap-2">
+        <button type="submit" class="bg-slate-900 text-white text-sm px-4 py-2 rounded">Save</button>
+        <button type="button" (click)="cancel()" class="bg-gray-200 text-sm px-4 py-2 rounded">Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="bg-white shadow rounded overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-50 text-left text-xs uppercase text-gray-500">
+        <tr>
+          <th class="px-4 py-2">Course</th>
+          <th class="px-4 py-2">Duration</th>
+          <th class="px-4 py-2">Fees</th>
+          <th class="px-4 py-2">Status</th>
+          <th class="px-4 py-2" *ngIf="canWrite()">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr *ngFor="let course of courses" class="border-t">
+          <td class="px-4 py-2 font-medium">{{ course.course_name }}</td>
+          <td class="px-4 py-2">{{ course.duration || '-' }}</td>
+          <td class="px-4 py-2">{{ course.fees ?? '-' }}</td>
+          <td class="px-4 py-2">
+            <span
+              class="px-2 py-0.5 rounded text-xs"
+              [class.bg-green-100]="course.status === 'ACTIVE'"
+              [class.text-green-700]="course.status === 'ACTIVE'"
+              [class.bg-gray-100]="course.status !== 'ACTIVE'"
+            >
+              {{ course.status }}
+            </span>
+          </td>
+          <td class="px-4 py-2 space-x-2" *ngIf="canWrite()">
+            <button (click)="edit(course)" class="text-blue-600 hover:underline">Edit</button>
+            <button *ngIf="canDelete()" (click)="remove(course)" class="text-red-600 hover:underline">
+              Delete
+            </button>
+          </td>
+        </tr>
+        <tr *ngIf="!loading && courses.length === 0">
+          <td colspan="5" class="px-4 py-6 text-center text-gray-500">No courses found.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\courses\courses-list.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { AuthService } from '../../services/auth.service';
+import { Course, CourseService } from '../../services/course.service';
+
+@Component({
+  selector: 'app-courses-list',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './courses-list.component.html',
+})
+export class CoursesListComponent implements OnInit {
+  private readonly fb = inject(FormBuilder);
+  private readonly courseService = inject(CourseService);
+  readonly auth = inject(AuthService);
+
+  courses: Course[] = [];
+  loading = false;
+  error: string | null = null;
+  showForm = false;
+  editingId: number | null = null;
+
+  readonly form = this.fb.nonNullable.group({
+    course_name: ['', Validators.required],
+    duration: [''],
+    fees: [0],
+    description: [''],
+    status: ['ACTIVE'],
+  });
+
+  ngOnInit(): void {
+    this.refresh();
+  }
+
+  canWrite(): boolean {
+    return this.auth.hasRole('ADMIN', 'MARKETING_MANAGER');
+  }
+
+  canDelete(): boolean {
+    return this.auth.hasRole('ADMIN');
+  }
+
+  refresh(): void {
+    this.loading = true;
+    this.courseService.list().subscribe({
+      next: (data) => {
+        this.courses = data;
+        this.loading = false;
+      },
+      error: () => {
+        this.error = 'Unable to load courses.';
+        this.loading = false;
+      },
+    });
+  }
+
+  openCreateForm(): void {
+    this.editingId = null;
+    this.form.reset({ course_name: '', duration: '', fees: 0, description: '', status: 'ACTIVE' });
+    this.showForm = true;
+  }
+
+  edit(course: Course): void {
+    this.editingId = course.course_id;
+    this.form.setValue({
+      course_name: course.course_name,
+      duration: course.duration ?? '',
+      fees: course.fees ?? 0,
+      description: course.description ?? '',
+      status: course.status,
+    });
+    this.showForm = true;
+  }
+
+  cancel(): void {
+    this.showForm = false;
+    this.editingId = null;
+  }
+
+  save(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    const payload = this.form.getRawValue();
+    const request = this.editingId
+      ? this.courseService.update(this.editingId, payload)
+      : this.courseService.create(payload);
+
+    request.subscribe({
+      next: () => {
+        this.showForm = false;
+        this.editingId = null;
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to save course. Check your permissions and inputs.'),
+    });
+  }
+
+  remove(course: Course): void {
+    if (!confirm(`Delete course "${course.course_name}"?`)) {
+      return;
+    }
+    this.courseService.delete(course.course_id).subscribe({
+      next: () => this.refresh(),
+      error: () => (this.error = 'Unable to delete course.'),
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\dashboard\dashboard.component.html
+<div class="p-6">
+  <h1 class="text-2xl font-bold mb-4">Marketing Agent - Admin Dashboard</h1>
+
+  <div *ngIf="error" class="text-red-600">{{ error }}</div>
+
+  <div *ngIf="summary" class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Daily Leads</div>
+      <div class="text-xl font-semibold">{{ summary.daily_leads }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Monthly Leads</div>
+      <div class="text-xl font-semibold">{{ summary.monthly_leads }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Top Course</div>
+      <div class="text-xl font-semibold">{{ summary.top_course || '-' }}</div>
+    </div>
+    <div class="p-4 bg-white shadow rounded">
+      <div class="text-sm text-gray-500">Top Campaign</div>
+      <div class="text-xl font-semibold">{{ summary.top_campaign || '-' }}</div>
+    </div>
+  </div>
+
+  <div *ngIf="summary" class="bg-white shadow rounded p-4 max-w-2xl">
+    <h2 class="font-semibold mb-3">Admissions Funnel</h2>
+    <canvas baseChart [data]="funnelChartData" type="bar"></canvas>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\dashboard\dashboard.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { BaseChartDirective } from 'ng2-charts';
+import { ChartData } from 'chart.js';
+import { DashboardService, DashboardSummary } from './dashboard.service';
+
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [CommonModule, BaseChartDirective],
+  templateUrl: './dashboard.component.html',
+})
+export class DashboardComponent implements OnInit {
+  private readonly dashboardService = inject(DashboardService);
+  summary: DashboardSummary | null = null;
+  error: string | null = null;
+
+  funnelChartData: ChartData<'bar'> = { labels: [], datasets: [{ data: [], label: 'Count' }] };
+
+  ngOnInit(): void {
+    this.dashboardService.getSummary().subscribe({
+      next: (data) => {
+        this.summary = data;
+        this.funnelChartData = {
+          labels: ['Visitors', 'Leads', 'Interested', 'Applications', 'Admissions'],
+          datasets: [
+            {
+              label: 'Admissions Funnel',
+              data: [
+                data.funnel.visitors,
+                data.funnel.leads,
+                data.funnel.interested,
+                data.funnel.applications,
+                data.funnel.admissions,
+              ],
+              backgroundColor: '#1e293b',
+            },
+          ],
+        };
+      },
+      error: () => (this.error = 'Unable to load dashboard metrics from the backend.'),
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\dashboard\dashboard.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../../environments/environment';
+
+export interface FunnelMetrics {
+  visitors: number;
+  leads: number;
+  interested: number;
+  applications: number;
+  admissions: number;
+}
+
+export interface DashboardSummary {
+  daily_leads: number;
+  monthly_leads: number;
+  leads_by_source: Record<string, number>;
+  top_course: string | null;
+  top_campaign: string | null;
+  funnel: FunnelMetrics;
+}
+
+@Injectable({ providedIn: 'root' })
+export class DashboardService {
+  private readonly http = inject(HttpClient);
+
+  getSummary(): Observable<DashboardSummary> {
+    return this.http.get<DashboardSummary>(`${environment.apiBaseUrl}/api/v1/analytics/dashboard`);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\leads\leads-list.component.html
+<div class="p-6">
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-2xl font-bold">Lead Management</h1>
+    <button (click)="openCreateForm()" class="bg-slate-900 text-white text-sm px-4 py-2 rounded">+ New Lead</button>
+  </div>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">{{ error }}</div>
+
+  <div *ngIf="showCreateForm" class="mb-6 bg-white shadow rounded p-4">
+    <h2 class="font-semibold mb-3">New Lead</h2>
+    <form [formGroup]="createForm" (ngSubmit)="createLead()" class="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">First Name</label>
+        <input formControlName="first_name" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Last Name</label>
+        <input formControlName="last_name" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Mobile</label>
+        <input formControlName="mobile" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Email</label>
+        <input formControlName="email" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">City</label>
+        <input formControlName="city" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">State</label>
+        <input formControlName="state" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Course Interest</label>
+        <input formControlName="course_interest" class="w-full border rounded px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Source</label>
+        <select formControlName="source" class="w-full border rounded px-3 py-2 text-sm">
+          <option *ngFor="let source of sources" [value]="source">{{ source }}</option>
+        </select>
+      </div>
+      <div class="md:col-span-3 flex gap-2">
+        <button type="submit" class="bg-slate-900 text-white text-sm px-4 py-2 rounded">Save</button>
+        <button type="button" (click)="showCreateForm = false" class="bg-gray-200 text-sm px-4 py-2 rounded">
+          Cancel
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div class="bg-white shadow rounded p-4 mb-4 flex flex-wrap gap-3 items-end">
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Search</label>
+      <input [(ngModel)]="searchText" [ngModelOptions]="{standalone: true}" class="border rounded px-3 py-2 text-sm" placeholder="Name, mobile, email" />
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Status</label>
+      <select [(ngModel)]="statusFilter" [ngModelOptions]="{standalone: true}" class="border rounded px-3 py-2 text-sm">
+        <option value="">All</option>
+        <option *ngFor="let status of statuses" [value]="status">{{ status }}</option>
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Source</label>
+      <select [(ngModel)]="sourceFilter" [ngModelOptions]="{standalone: true}" class="border rounded px-3 py-2 text-sm">
+        <option value="">All</option>
+        <option *ngFor="let source of sources" [value]="source">{{ source }}</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="flex gap-4">
+    <div class="flex-1 bg-white shadow rounded overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead class="bg-gray-50 text-left text-xs uppercase text-gray-500">
+          <tr>
+            <th class="px-4 py-2">Name</th>
+            <th class="px-4 py-2">Mobile</th>
+            <th class="px-4 py-2">Source</th>
+            <th class="px-4 py-2">Score</th>
+            <th class="px-4 py-2">Status</th>
+            <th class="px-4 py-2">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            *ngFor="let lead of filteredLeads()"
+            class="border-t cursor-pointer hover:bg-gray-50"
+            [class.bg-blue-50]="selectedLead?.lead_id === lead.lead_id"
+          >
+            <td class="px-4 py-2 font-medium">{{ lead.first_name }} {{ lead.last_name }}</td>
+            <td class="px-4 py-2">{{ lead.mobile }}</td>
+            <td class="px-4 py-2">{{ lead.source }}</td>
+            <td class="px-4 py-2">
+              <span
+                class="px-2 py-0.5 rounded text-xs"
+                [class.bg-red-100]="scoreBand(lead.lead_score) === 'Hot'"
+                [class.text-red-700]="scoreBand(lead.lead_score) === 'Hot'"
+                [class.bg-yellow-100]="scoreBand(lead.lead_score) === 'Warm'"
+                [class.text-yellow-700]="scoreBand(lead.lead_score) === 'Warm'"
+                [class.bg-blue-100]="scoreBand(lead.lead_score) === 'Cold'"
+                [class.text-blue-700]="scoreBand(lead.lead_score) === 'Cold'"
+              >
+                {{ lead.lead_score }} &middot; {{ scoreBand(lead.lead_score) }}
+              </span>
+            </td>
+            <td class="px-4 py-2">{{ lead.status }}</td>
+            <td class="px-4 py-2"><button (click)="select(lead)" class="text-blue-600 hover:underline">View</button></td>
+          </tr>
+          <tr *ngIf="!loading && filteredLeads().length === 0">
+            <td colspan="6" class="px-4 py-6 text-center text-gray-500">No leads match the current filters.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div *ngIf="selectedLead" class="w-96 bg-white shadow rounded p-4 shrink-0">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold">{{ selectedLead.first_name }} {{ selectedLead.last_name }}</h3>
+        <button (click)="closeDetail()" class="text-gray-400 hover:text-gray-700">&times;</button>
+      </div>
+      <div class="text-xs text-gray-500 mb-3 space-y-0.5">
+        <div>{{ selectedLead.mobile }} &middot; {{ selectedLead.email || 'no email' }}</div>
+        <div>{{ selectedLead.city || '-' }}, {{ selectedLead.state || '-' }}</div>
+        <div *ngIf="score">Score: {{ score.lead_score }} ({{ score.band }})</div>
+      </div>
+
+      <form [formGroup]="updateForm" (ngSubmit)="saveUpdate()" class="space-y-2 mb-4" *ngIf="canManage()">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Status</label>
+          <select formControlName="status" class="w-full border rounded px-2 py-1.5 text-sm">
+            <option *ngFor="let status of statuses" [value]="status">{{ status }}</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Assigned To (User ID)</label>
+          <input type="number" formControlName="assigned_to" class="w-full border rounded px-2 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Course Interest</label>
+          <input formControlName="course_interest" class="w-full border rounded px-2 py-1.5 text-sm" />
+        </div>
+        <button type="submit" class="w-full bg-slate-900 text-white text-sm py-1.5 rounded">Update Lead</button>
+      </form>
+
+      <h4 class="text-sm font-semibold mb-2">Timeline</h4>
+      <ul class="space-y-2 max-h-56 overflow-y-auto mb-3">
+        <li *ngFor="let activity of timeline" class="text-xs border-l-2 border-slate-300 pl-2">
+          <div class="font-medium">{{ activity.activity_type }}</div>
+          <div class="text-gray-500">{{ activity.remarks }}</div>
+          <div class="text-gray-400">{{ activity.activity_date | date: 'short' }}</div>
+        </li>
+        <li *ngIf="timeline.length === 0" class="text-xs text-gray-400">No activity recorded yet.</li>
+      </ul>
+
+      <form [formGroup]="activityForm" (ngSubmit)="addActivity()" class="space-y-2" *ngIf="canManage()">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Add Activity / Note</label>
+        <select formControlName="activity_type" class="w-full border rounded px-2 py-1.5 text-sm">
+          <option *ngFor="let type of activityTypes" [value]="type">{{ type }}</option>
+        </select>
+        <textarea formControlName="remarks" rows="2" class="w-full border rounded px-2 py-1.5 text-sm" placeholder="Remarks"></textarea>
+        <button type="submit" class="w-full bg-gray-800 text-white text-sm py-1.5 rounded">Add Activity</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\leads\leads-list.component.ts
+import { Component, OnInit, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
+import { AuthService } from '../../services/auth.service';
+import {
+  LEAD_ACTIVITY_TYPES,
+  LEAD_SOURCES,
+  LEAD_STATUSES,
+  Lead,
+  LeadActivity,
+  LeadScore,
+  LeadService,
+} from '../../services/lead.service';
+
+@Component({
+  selector: 'app-leads-list',
+  standalone: true,
+  imports: [CommonModule, FormsModule, ReactiveFormsModule],
+  templateUrl: './leads-list.component.html',
+})
+export class LeadsListComponent implements OnInit {
+  private readonly fb = inject(FormBuilder);
+  private readonly leadService = inject(LeadService);
+  readonly auth = inject(AuthService);
+
+  readonly sources = LEAD_SOURCES;
+  readonly statuses = LEAD_STATUSES;
+  readonly activityTypes = LEAD_ACTIVITY_TYPES;
+
+  leads: Lead[] = [];
+  loading = false;
+  error: string | null = null;
+
+  searchText = '';
+  statusFilter = '';
+  sourceFilter = '';
+
+  showCreateForm = false;
+  selectedLead: Lead | null = null;
+  timeline: LeadActivity[] = [];
+  score: LeadScore | null = null;
+
+  readonly createForm = this.fb.nonNullable.group({
+    first_name: ['', Validators.required],
+    last_name: [''],
+    mobile: ['', Validators.required],
+    email: [''],
+    city: [''],
+    state: [''],
+    course_interest: [''],
+    source: [this.sources[0], Validators.required],
+  });
+
+  readonly updateForm = this.fb.nonNullable.group({
+    status: ['NEW'],
+    assigned_to: [0],
+    course_interest: [''],
+  });
+
+  readonly activityForm = this.fb.nonNullable.group({
+    activity_type: [this.activityTypes[0], Validators.required],
+    remarks: [''],
+  });
+
+  ngOnInit(): void {
+    this.refresh();
+  }
+
+  canManage(): boolean {
+    return this.auth.hasRole('ADMIN', 'MARKETING_MANAGER', 'COUNSELOR');
+  }
+
+  refresh(): void {
+    this.loading = true;
+    this.leadService.list().subscribe({
+      next: (data) => {
+        this.leads = data;
+        this.loading = false;
+      },
+      error: () => {
+        this.error = 'Unable to load leads.';
+        this.loading = false;
+      },
+    });
+  }
+
+  filteredLeads(): Lead[] {
+    const search = this.searchText.trim().toLowerCase();
+    return this.leads.filter((lead) => {
+      const matchesSearch =
+        !search ||
+        `${lead.first_name} ${lead.last_name ?? ''}`.toLowerCase().includes(search) ||
+        lead.mobile.includes(search) ||
+        (lead.email ?? '').toLowerCase().includes(search);
+      const matchesStatus = !this.statusFilter || lead.status === this.statusFilter;
+      const matchesSource = !this.sourceFilter || lead.source === this.sourceFilter;
+      return matchesSearch && matchesStatus && matchesSource;
+    });
+  }
+
+  scoreBand(score: number): string {
+    if (score <= 30) return 'Cold';
+    if (score <= 60) return 'Warm';
+    return 'Hot';
+  }
+
+  openCreateForm(): void {
+    this.createForm.reset({
+      first_name: '',
+      last_name: '',
+      mobile: '',
+      email: '',
+      city: '',
+      state: '',
+      course_interest: '',
+      source: this.sources[0],
+    });
+    this.showCreateForm = true;
+  }
+
+  createLead(): void {
+    if (this.createForm.invalid) {
+      this.createForm.markAllAsTouched();
+      return;
+    }
+    this.leadService.create(this.createForm.getRawValue()).subscribe({
+      next: () => {
+        this.showCreateForm = false;
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to create lead.'),
+    });
+  }
+
+  select(lead: Lead): void {
+    this.selectedLead = lead;
+    this.updateForm.setValue({
+      status: lead.status,
+      assigned_to: lead.assigned_to ?? 0,
+      course_interest: lead.course_interest ?? '',
+    });
+    this.activityForm.reset({ activity_type: this.activityTypes[0], remarks: '' });
+    this.loadTimeline(lead.lead_id);
+    this.loadScore(lead.lead_id);
+  }
+
+  closeDetail(): void {
+    this.selectedLead = null;
+    this.timeline = [];
+    this.score = null;
+  }
+
+  private loadTimeline(leadId: number): void {
+    this.leadService.getTimeline(leadId).subscribe({ next: (data) => (this.timeline = data) });
+  }
+
+  private loadScore(leadId: number): void {
+    this.leadService.getScore(leadId).subscribe({ next: (data) => (this.score = data) });
+  }
+
+  saveUpdate(): void {
+    if (!this.selectedLead) {
+      return;
+    }
+    this.leadService.update(this.selectedLead.lead_id, this.updateForm.getRawValue()).subscribe({
+      next: (updated) => {
+        this.selectedLead = updated;
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to update lead.'),
+    });
+  }
+
+  addActivity(): void {
+    if (!this.selectedLead || this.activityForm.invalid) {
+      this.activityForm.markAllAsTouched();
+      return;
+    }
+    const leadId = this.selectedLead.lead_id;
+    this.leadService.addActivity(leadId, this.activityForm.getRawValue()).subscribe({
+      next: () => {
+        this.activityForm.reset({ activity_type: this.activityTypes[0], remarks: '' });
+        this.loadTimeline(leadId);
+        this.loadScore(leadId);
+        this.refresh();
+      },
+      error: () => (this.error = 'Unable to add activity.'),
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\seo\seo-generate.component.html
+<div class="p-6 max-w-4xl">
+  <h1 class="text-2xl font-bold mb-4">SEO Agent</h1>
+  <p class="text-sm text-gray-500 mb-4">
+    Generate an SEO-optimized blog package: title, meta description, slug, tags, keywords, FAQs and schema JSON.
+  </p>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+    {{ error }}
+  </div>
+
+  <form [formGroup]="form" (ngSubmit)="submit()" class="bg-white shadow rounded p-4 flex gap-3 items-end mb-6">
+    <div class="flex-1">
+      <label class="block text-xs font-medium text-gray-600 mb-1">Keyword</label>
+      <input
+        formControlName="keyword"
+        class="w-full border rounded px-3 py-2 text-sm"
+        placeholder="Top BCA College In Gwalior"
+      />
+    </div>
+    <button type="submit" [disabled]="loading" class="bg-slate-900 text-white text-sm px-4 py-2 rounded disabled:opacity-50">
+      {{ loading ? 'Generating...' : 'Generate SEO Blog' }}
+    </button>
+  </form>
+
+  <div *ngFor="let blog of history" class="bg-white shadow rounded p-4 mb-4">
+    <div class="flex items-center justify-between">
+      <h3 class="font-semibold">{{ blog.title || 'Untitled' }}</h3>
+      <span class="text-xs px-2 py-0.5 rounded bg-gray-100">{{ blog.status || 'GENERATED' }}</span>
+    </div>
+    <div class="text-xs text-gray-500 mt-1">Slug: /{{ blog.slug }}</div>
+    <p class="text-sm text-gray-700 mt-2">{{ blog.meta_description }}</p>
+    <div *ngIf="blog.tags?.length" class="mt-2 flex flex-wrap gap-1">
+      <span *ngFor="let tag of blog.tags" class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">#{{ tag }}</span>
+    </div>
+    <details class="mt-3 text-sm">
+      <summary class="cursor-pointer text-blue-600">View full content</summary>
+      <p class="mt-2 whitespace-pre-line text-gray-700">{{ blog.content }}</p>
+    </details>
+  </div>
+
+  <div *ngIf="history.length === 0" class="text-gray-500 text-sm">No SEO blogs generated yet in this session.</div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\seo\seo-generate.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { SeoBlogResult, SeoService } from '../../services/seo.service';
+
+@Component({
+  selector: 'app-seo-generate',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './seo-generate.component.html',
+})
+export class SeoGenerateComponent {
+  private readonly fb = inject(FormBuilder);
+  private readonly seoService = inject(SeoService);
+
+  loading = false;
+  error: string | null = null;
+  history: SeoBlogResult[] = [];
+
+  readonly form = this.fb.nonNullable.group({
+    keyword: ['', Validators.required],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.loading = true;
+    this.error = null;
+    this.seoService.generate(this.form.getRawValue()).subscribe({
+      next: (result) => {
+        this.loading = false;
+        this.history.unshift(result);
+      },
+      error: () => {
+        this.loading = false;
+        this.error = 'SEO blog generation failed. Please try again.';
+      },
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\social\social-generate.component.html
+<div class="p-6 max-w-4xl">
+  <h1 class="text-2xl font-bold mb-4">Social Media Agent</h1>
+  <p class="text-sm text-gray-500 mb-4">
+    Generate a caption, hashtags, CTA and image/video prompts for Facebook, Instagram, LinkedIn, YouTube or WhatsApp.
+  </p>
+
+  <div *ngIf="error" class="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+    {{ error }}
+  </div>
+
+  <form [formGroup]="form" (ngSubmit)="submit()" class="bg-white shadow rounded p-4 grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Platform</label>
+      <select formControlName="platform" class="w-full border rounded px-3 py-2 text-sm">
+        <option *ngFor="let platform of platforms" [value]="platform">{{ platform }}</option>
+      </select>
+    </div>
+    <div class="md:col-span-2">
+      <label class="block text-xs font-medium text-gray-600 mb-1">Topic</label>
+      <input formControlName="topic" class="w-full border rounded px-3 py-2 text-sm" placeholder="Admissions Open" />
+    </div>
+    <div class="md:col-span-3">
+      <button type="submit" [disabled]="loading" class="bg-slate-900 text-white text-sm px-4 py-2 rounded disabled:opacity-50">
+        {{ loading ? 'Generating...' : 'Generate Post' }}
+      </button>
+    </div>
+  </form>
+
+  <div *ngFor="let post of history" class="bg-white shadow rounded p-4 mb-4">
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-xs uppercase font-semibold text-gray-500">{{ post.platform }}</span>
+      <span class="text-xs text-gray-400">Post #{{ post.post_id }}</span>
+    </div>
+    <p class="text-sm text-gray-800 mb-2">{{ post.caption }}</p>
+    <div class="flex flex-wrap gap-1 mb-2">
+      <span *ngFor="let tag of post.hashtags" class="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">#{{ tag }}</span>
+    </div>
+    <div class="text-xs text-gray-600"><span class="font-medium">CTA:</span> {{ post.cta }}</div>
+    <div class="text-xs text-gray-600 mt-1"><span class="font-medium">Image prompt:</span> {{ post.image_prompt }}</div>
+    <div class="text-xs text-gray-600 mt-1"><span class="font-medium">Video prompt:</span> {{ post.video_prompt }}</div>
+  </div>
+
+  <div *ngIf="history.length === 0" class="text-gray-500 text-sm">No social posts generated yet in this session.</div>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\features\social\social-generate.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { SOCIAL_PLATFORMS, SocialPostGenerateResponse, SocialService } from '../../services/social.service';
+
+@Component({
+  selector: 'app-social-generate',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  templateUrl: './social-generate.component.html',
+})
+export class SocialGenerateComponent {
+  private readonly fb = inject(FormBuilder);
+  private readonly socialService = inject(SocialService);
+
+  readonly platforms = SOCIAL_PLATFORMS;
+  loading = false;
+  error: string | null = null;
+  history: (SocialPostGenerateResponse & { platform: string; topic: string })[] = [];
+
+  readonly form = this.fb.nonNullable.group({
+    platform: ['instagram', Validators.required],
+    topic: ['', Validators.required],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+    this.loading = true;
+    this.error = null;
+    const payload = this.form.getRawValue();
+    this.socialService.generate(payload).subscribe({
+      next: (result) => {
+        this.loading = false;
+        this.history.unshift({ ...result, platform: payload.platform, topic: payload.topic });
+      },
+      error: () => {
+        this.loading = false;
+        this.error = 'Social post generation failed. Please try again.';
+      },
+    });
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\models\role.ts
+export const ROLES = ['ADMIN', 'MARKETING_MANAGER', 'COUNSELOR', 'CONTENT_REVIEWER', 'READ_ONLY'] as const;
+
+export type Role = (typeof ROLES)[number];
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\auth.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable, tap, throwError } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+export interface JwtClaims {
+  sub: string;
+  role: string;
+  type: string;
+  iat: number;
+  exp: number;
+}
+
+const ACCESS_KEY = 'mkt_access_token';
+const REFRESH_KEY = 'mkt_refresh_token';
+
+// Decodes a JWT payload without verifying the signature - used client-side
+// only to read role/email/expiry for UI/nav purposes. The backend is the
+// source of truth for authorization on every request.
+function decodeJwt(token: string): JwtClaims | null {
+  try {
+    const payload = token.split('.')[1];
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      atob(normalized)
+        .split('')
+        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .join(''),
+    );
+    return JSON.parse(json) as JwtClaims;
+  } catch {
+    return null;
+  }
+}
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/auth`;
+
+  login(email: string, password: string): Observable<TokenResponse> {
+    return this.http
+      .post<TokenResponse>(`${this.base}/login`, { email, password })
+      .pipe(tap((res) => this.storeTokens(res)));
+  }
+
+  refresh(): Observable<TokenResponse> {
+    const refresh_token = this.getRefreshToken();
+    if (!refresh_token) {
+      return throwError(() => new Error('No refresh token available'));
+    }
+    return this.http
+      .post<TokenResponse>(`${this.base}/refresh`, { refresh_token })
+      .pipe(tap((res) => this.storeTokens(res)));
+  }
+
+  logout(): void {
+    this.http.post(`${this.base}/logout`, {}).subscribe({ error: () => undefined });
+    this.clearTokens();
+  }
+
+  storeTokens(res: TokenResponse): void {
+    localStorage.setItem(ACCESS_KEY, res.access_token);
+    localStorage.setItem(REFRESH_KEY, res.refresh_token);
+  }
+
+  clearTokens(): void {
+    localStorage.removeItem(ACCESS_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  }
+
+  getAccessToken(): string | null {
+    return localStorage.getItem(ACCESS_KEY);
+  }
+
+  getRefreshToken(): string | null {
+    return localStorage.getItem(REFRESH_KEY);
+  }
+
+  getClaims(): JwtClaims | null {
+    const token = this.getAccessToken();
+    return token ? decodeJwt(token) : null;
+  }
+
+  isAuthenticated(): boolean {
+    const claims = this.getClaims();
+    return !!claims && claims.exp * 1000 > Date.now();
+  }
+
+  getRole(): string | null {
+    return this.getClaims()?.role ?? null;
+  }
+
+  getEmail(): string | null {
+    return this.getClaims()?.sub ?? null;
+  }
+
+  hasRole(...roles: string[]): boolean {
+    const role = this.getRole();
+    return !!role && roles.includes(role);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\campaign.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface Campaign {
+  campaign_id: number;
+  campaign_name: string;
+  campaign_type: string;
+  start_date: string | null;
+  end_date: string | null;
+  budget: number | null;
+  status: string;
+  created_date: string;
+}
+
+export interface CampaignCreate {
+  campaign_name: string;
+  campaign_type: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  budget?: number | null;
+  course_id?: number | null;
+}
+
+export interface CampaignUpdate {
+  status?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  budget?: number | null;
+}
+
+export interface CampaignLaunchRequest {
+  topic: string;
+  platforms: string[];
+}
+
+export const CAMPAIGN_TYPES = ['Admission Campaign', 'Placement Campaign', 'Event Campaign', 'Scholarship Campaign'];
+export const CAMPAIGN_STATUSES = ['DRAFT', 'SCHEDULED', 'ACTIVE', 'COMPLETED', 'CANCELLED'];
+
+@Injectable({ providedIn: 'root' })
+export class CampaignService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/campaigns`;
+
+  list(skip = 0, limit = 100): Observable<Campaign[]> {
+    return this.http.get<Campaign[]>(this.base, { params: { skip, limit } });
+  }
+
+  create(payload: CampaignCreate): Observable<Campaign> {
+    return this.http.post<Campaign>(this.base, payload);
+  }
+
+  update(campaignId: number, payload: CampaignUpdate): Observable<Campaign> {
+    return this.http.put<Campaign>(`${this.base}/${campaignId}`, payload);
+  }
+
+  launch(campaignId: number, payload: CampaignLaunchRequest): Observable<Record<string, unknown>> {
+    return this.http.post<Record<string, unknown>>(`${this.base}/${campaignId}/launch`, payload);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\content.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface ContentGenerateRequest {
+  course: string;
+  topic: string;
+  targetAudience: string;
+  content_type: string;
+}
+
+export interface ContentGenerateResponse {
+  contentId: number;
+  status: string;
+}
+
+export const CONTENT_TYPES = [
+  'Blog',
+  'Article',
+  'Brochure',
+  'Course Description',
+  'Event Description',
+  'Scholarship Content',
+];
+
+@Injectable({ providedIn: 'root' })
+export class ContentService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/content`;
+
+  generate(payload: ContentGenerateRequest): Observable<ContentGenerateResponse> {
+    return this.http.post<ContentGenerateResponse>(`${this.base}/generate`, payload);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\course.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface Course {
+  course_id: number;
+  course_name: string;
+  duration: string | null;
+  fees: number | null;
+  description: string | null;
+  status: string;
+  created_date: string;
+}
+
+export interface CourseCreate {
+  course_name: string;
+  duration?: string | null;
+  fees?: number | null;
+  description?: string | null;
+  status?: string;
+}
+
+export type CourseUpdate = Partial<CourseCreate>;
+
+@Injectable({ providedIn: 'root' })
+export class CourseService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/courses`;
+
+  list(skip = 0, limit = 100): Observable<Course[]> {
+    return this.http.get<Course[]>(this.base, { params: { skip, limit } });
+  }
+
+  create(payload: CourseCreate): Observable<Course> {
+    return this.http.post<Course>(this.base, payload);
+  }
+
+  update(courseId: number, payload: CourseUpdate): Observable<Course> {
+    return this.http.put<Course>(`${this.base}/${courseId}`, payload);
+  }
+
+  delete(courseId: number): Observable<void> {
+    return this.http.delete<void>(`${this.base}/${courseId}`);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\lead.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface Lead {
+  lead_id: number;
+  first_name: string;
+  last_name: string | null;
+  mobile: string;
+  email: string | null;
+  city: string | null;
+  state: string | null;
+  course_interest: string | null;
+  source: string;
+  lead_score: number;
+  status: string;
+  assigned_to: number | null;
+  created_date: string;
+}
+
+export interface LeadCreate {
+  first_name: string;
+  last_name?: string | null;
+  mobile: string;
+  email?: string | null;
+  city?: string | null;
+  state?: string | null;
+  course_interest?: string | null;
+  source: string;
+  campaign_id?: number | null;
+}
+
+export interface LeadUpdate {
+  status?: string;
+  assigned_to?: number | null;
+  course_interest?: string | null;
+}
+
+export interface LeadActivity {
+  activity_id: number;
+  lead_id: number;
+  activity_type: string;
+  remarks: string | null;
+  activity_date: string;
+}
+
+export interface LeadActivityCreate {
+  activity_type: string;
+  remarks?: string | null;
+}
+
+export interface LeadScore {
+  lead_id: number;
+  lead_score: number;
+  band: string;
+}
+
+export const LEAD_SOURCES = ['Website', 'WhatsApp', 'Meta Ads', 'Google Ads', 'Direct Walk-in'];
+
+export const LEAD_STATUSES = [
+  'NEW',
+  'CONTACTED',
+  'INTERESTED',
+  'COUNSELING',
+  'APPLICATION_STARTED',
+  'APPLICATION_SUBMITTED',
+  'ADMITTED',
+  'LOST',
+];
+
+export const LEAD_ACTIVITY_TYPES = [
+  'WEBSITE_VISIT',
+  'BROCHURE_DOWNLOAD',
+  'WEBINAR_ATTENDED',
+  'WHATSAPP_RESPONSE',
+  'PHONE_CALL',
+  'EMAIL',
+  'NOTE',
+];
+
+@Injectable({ providedIn: 'root' })
+export class LeadService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/leads`;
+
+  list(skip = 0, limit = 100): Observable<Lead[]> {
+    return this.http.get<Lead[]>(this.base, { params: { skip, limit } });
+  }
+
+  create(payload: LeadCreate): Observable<Lead> {
+    return this.http.post<Lead>(this.base, payload);
+  }
+
+  update(leadId: number, payload: LeadUpdate): Observable<Lead> {
+    return this.http.put<Lead>(`${this.base}/${leadId}`, payload);
+  }
+
+  getTimeline(leadId: number): Observable<LeadActivity[]> {
+    return this.http.get<LeadActivity[]>(`${this.base}/${leadId}/timeline`);
+  }
+
+  addActivity(leadId: number, payload: LeadActivityCreate): Observable<LeadActivity> {
+    return this.http.post<LeadActivity>(`${this.base}/${leadId}/activity`, payload);
+  }
+
+  getScore(leadId: number): Observable<LeadScore> {
+    return this.http.get<LeadScore>(`${this.base}/${leadId}/score`);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\seo.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface SeoGenerateRequest {
+  keyword: string;
+}
+
+export interface SeoBlogResult {
+  blog_id?: number;
+  title?: string;
+  keyword?: string;
+  slug?: string;
+  meta_description?: string | null;
+  content?: string;
+  status?: string;
+  tags?: string[];
+  keywords?: string[];
+  faqs?: unknown[];
+  schema_json?: unknown;
+  [key: string]: unknown;
+}
+
+@Injectable({ providedIn: 'root' })
+export class SeoService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/seo`;
+
+  generate(payload: SeoGenerateRequest): Observable<SeoBlogResult> {
+    return this.http.post<SeoBlogResult>(`${this.base}/generate`, payload);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\services\social.service.ts
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { environment } from '../../environments/environment';
+
+export interface SocialPostGenerateRequest {
+  platform: string;
+  topic: string;
+}
+
+export interface SocialPostGenerateResponse {
+  caption: string;
+  hashtags: string[];
+  cta: string;
+  image_prompt: string;
+  video_prompt: string;
+  post_id: number;
+}
+
+export const SOCIAL_PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'whatsapp'];
+
+@Injectable({ providedIn: 'root' })
+export class SocialService {
+  private readonly http = inject(HttpClient);
+  private readonly base = `${environment.apiBaseUrl}/api/v1/social`;
+
+  generate(payload: SocialPostGenerateRequest): Observable<SocialPostGenerateResponse> {
+    return this.http.post<SocialPostGenerateResponse>(`${this.base}/post/generate`, payload);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\shared\layout\shell.component.html
+<div class="min-h-screen flex bg-gray-100">
+  <aside class="w-64 bg-slate-900 text-slate-100 flex flex-col shrink-0">
+    <div class="px-4 py-5 text-lg font-bold border-b border-slate-700">Marketing Agent</div>
+    <nav class="flex-1 py-4 space-y-1">
+      <a
+        *ngFor="let item of visibleNavItems()"
+        [routerLink]="item.path"
+        routerLinkActive="bg-slate-700 text-white"
+        class="block px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 hover:text-white"
+      >
+        {{ item.label }}
+      </a>
+    </nav>
+    <div class="px-4 py-4 border-t border-slate-700 text-xs text-slate-400">
+      <div class="truncate">{{ auth.getEmail() }}</div>
+      <div class="uppercase tracking-wide">{{ auth.getRole() }}</div>
+      <button
+        (click)="logout()"
+        class="mt-3 w-full rounded bg-slate-700 hover:bg-slate-600 text-white text-sm py-1.5"
+      >
+        Logout
+      </button>
+    </div>
+  </aside>
+  <main class="flex-1 overflow-y-auto">
+    <router-outlet />
+  </main>
+</div>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\shared\layout\shell.component.ts
+import { Component, inject } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { AuthService } from '../../services/auth.service';
+
+interface NavItem {
+  path: string;
+  label: string;
+  roles: string[];
+}
+
+@Component({
+  selector: 'app-shell',
+  standalone: true,
+  imports: [CommonModule, RouterLink, RouterLinkActive, RouterOutlet],
+  templateUrl: './shell.component.html',
+})
+export class ShellComponent {
+  readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly navItems: NavItem[] = [
+    { path: '/dashboard', label: 'Dashboard', roles: [] },
+    { path: '/courses', label: 'Courses', roles: [] },
+    { path: '/content', label: 'Content Agent', roles: ['ADMIN', 'MARKETING_MANAGER', 'CONTENT_REVIEWER'] },
+    { path: '/seo', label: 'SEO Agent', roles: ['ADMIN', 'MARKETING_MANAGER', 'CONTENT_REVIEWER'] },
+    { path: '/social', label: 'Social Agent', roles: ['ADMIN', 'MARKETING_MANAGER', 'CONTENT_REVIEWER'] },
+    { path: '/campaigns', label: 'Campaigns', roles: [] },
+    { path: '/leads', label: 'Leads', roles: [] },
+    { path: '/analytics', label: 'Analytics', roles: [] },
+  ];
+
+  visibleNavItems(): NavItem[] {
+    return this.navItems.filter((item) => item.roles.length === 0 || this.auth.hasRole(...item.roles));
+  }
+
+  logout(): void {
+    this.auth.logout();
+    this.router.navigate(['/login']);
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\app.component.ts
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterOutlet],
+  template: `<router-outlet />`,
+})
+export class AppComponent {
+  title = 'marketing-agent-frontend';
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\app.config.ts
+import { ApplicationConfig } from '@angular/core';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { provideAnimations } from '@angular/platform-browser/animations';
+import { provideCharts, withDefaultRegisterables } from 'ng2-charts';
+
+import { routes } from './app.routes';
+import { authInterceptor } from './core/interceptors/auth.interceptor';
+import { mockInterceptor } from './core/interceptors/mock.interceptor';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideRouter(routes),
+    provideHttpClient(withInterceptors([mockInterceptor, authInterceptor])),
+    provideAnimations(),
+    provideCharts(withDefaultRegisterables()),
+  ],
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\app\app.routes.ts
+import { Routes } from '@angular/router';
+import { authGuard } from './core/guards/auth.guard';
+import { roleGuard } from './core/guards/role.guard';
+
+const CONTENT_ROLES = ['ADMIN', 'MARKETING_MANAGER', 'CONTENT_REVIEWER'];
+
+/**
+ * Phase 13 - Frontend routes. Screens are added incrementally as each
+ * backend module's API becomes available (see marketing_agent_instructions.md
+ * -> "Implementation Roadmap" -> Phase 13).
+ */
+export const routes: Routes = [
+  {
+    path: 'login',
+    loadComponent: () => import('./features/auth/login.component').then((m) => m.LoginComponent),
+  },
+  {
+    path: '',
+    loadComponent: () => import('./shared/layout/shell.component').then((m) => m.ShellComponent),
+    canActivate: [authGuard],
+    children: [
+      { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
+      {
+        path: 'dashboard',
+        loadComponent: () => import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+      },
+      {
+        path: 'courses',
+        loadComponent: () =>
+          import('./features/courses/courses-list.component').then((m) => m.CoursesListComponent),
+      },
+      {
+        path: 'content',
+        canActivate: [roleGuard],
+        data: { roles: CONTENT_ROLES },
+        loadComponent: () =>
+          import('./features/content/content-generate.component').then((m) => m.ContentGenerateComponent),
+      },
+      {
+        path: 'seo',
+        canActivate: [roleGuard],
+        data: { roles: CONTENT_ROLES },
+        loadComponent: () => import('./features/seo/seo-generate.component').then((m) => m.SeoGenerateComponent),
+      },
+      {
+        path: 'social',
+        canActivate: [roleGuard],
+        data: { roles: CONTENT_ROLES },
+        loadComponent: () =>
+          import('./features/social/social-generate.component').then((m) => m.SocialGenerateComponent),
+      },
+      {
+        path: 'campaigns',
+        loadComponent: () =>
+          import('./features/campaigns/campaigns-list.component').then((m) => m.CampaignsListComponent),
+      },
+      {
+        path: 'leads',
+        loadComponent: () => import('./features/leads/leads-list.component').then((m) => m.LeadsListComponent),
+      },
+      {
+        path: 'analytics',
+        loadComponent: () => import('./features/analytics/analytics.component').then((m) => m.AnalyticsComponent),
+      },
+      { path: '**', redirectTo: 'dashboard' },
+    ],
+  },
+  { path: '**', redirectTo: 'login' },
+];
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\environments\environment.prod.ts
+export const environment = {
+  production: true,
+  apiBaseUrl: '/api',
+  useMockData: false,
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\environments\environment.ts
+export const environment = {
+  production: false,
+  apiBaseUrl: 'http://localhost:8000',
+  // Serves mock JSON fixtures (frontend/src/mock-data) instead of calling the
+  // real backend, so every screen can be built/tested independently. Flip to
+  // false once the backend is ready to validate against the real API.
+  useMockData: true,
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Marketing Agent</title>
+  <base href="/" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\main.ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { appConfig } from './app/app.config';
+import { AppComponent } from './app/app.component';
+
+bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err));
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\src\styles.css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  height: 100%;
+  margin: 0;
+  font-family: Roboto, "Helvetica Neue", sans-serif;
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\angular.json
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "newProjectRoot": "projects",
+  "projects": {
+    "marketing-agent-frontend": {
+      "projectType": "application",
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular-devkit/build-angular:application",
+          "options": {
+            "outputPath": "dist/marketing-agent-frontend",
+            "index": "src/index.html",
+            "browser": "src/main.ts",
+            "polyfills": ["zone.js"],
+            "tsConfig": "tsconfig.app.json",
+            "assets": ["src/assets"],
+            "styles": ["src/styles.css"],
+            "scripts": []
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                { "type": "initial", "maximumWarning": "1mb", "maximumError": "2mb" }
+              ],
+              "outputHashing": "all",
+              "fileReplacements": [
+                { "replace": "src/environments/environment.ts", "with": "src/environments/environment.prod.ts" }
+              ]
+            },
+            "development": {
+              "optimization": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular-devkit/build-angular:dev-server",
+          "configurations": {
+            "production": { "buildTarget": "marketing-agent-frontend:build:production" },
+            "development": { "buildTarget": "marketing-agent-frontend:build:development" }
+          },
+          "defaultConfiguration": "development"
+        }
+      }
+    }
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\Dockerfile
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install
+COPY . .
+RUN npx ng build --configuration production
+
+FROM nginx:alpine
+COPY --from=build /app/dist/marketing-agent-frontend/browser /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\package.json
+{
+  "name": "marketing-agent-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "ng serve",
+    "build": "ng build",
+    "test": "ng test",
+    "lint": "ng lint"
+  },
+  "dependencies": {
+    "@angular/animations": "^19.0.0",
+    "@angular/common": "^19.0.0",
+    "@angular/compiler": "^19.0.0",
+    "@angular/core": "^19.0.0",
+    "@angular/forms": "^19.0.0",
+    "@angular/material": "^19.0.0",
+    "@angular/cdk": "^19.0.0",
+    "@angular/platform-browser": "^19.0.0",
+    "@angular/platform-browser-dynamic": "^19.0.0",
+    "@angular/router": "^19.0.0",
+    "chart.js": "^4.4.4",
+    "ng2-charts": "^6.0.1",
+    "rxjs": "~7.8.1",
+    "tslib": "^2.7.0",
+    "zone.js": "~0.15.0"
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^19.0.0",
+    "@angular/cli": "^19.0.0",
+    "@angular/compiler-cli": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "typescript": "~5.6.2"
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\postcss.config.js
+module.exports = {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\tailwind.config.js
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  content: ["./src/**/*.{html,ts}"],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+};
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\tsconfig.app.json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app",
+    "types": []
+  },
+  "files": ["src/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\tsconfig.json
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "outDir": "./dist/out-tsc",
+    "rootDir": "./src",
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "declaration": false,
+    "experimentalDecorators": true,
+    "moduleResolution": "bundler",
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "ES2022",
+    "lib": ["ES2022", "dom"]
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "strictTemplates": true
+  }
+}
+
+-----------------------------------------------------------------
+C:\ws\agent\admission\marketing-agent\frontend\tsconfig.spec.json
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/spec",
+    "types": ["jasmine"]
+  },
+  "include": ["src/**/*.spec.ts", "src/**/*.d.ts"]
+}
+
+=========================================================
