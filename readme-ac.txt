@@ -291,19 +291,6 @@ import { Roadmap } from '../models/roadmap.model';
 import { Student } from '../models/student.model';
 import { BehavioralMetric, StudentSkill } from '../models/skill.model';
 
-import authData from './data/auth.json';
-import analyticsData from './data/analytics.json';
-import catalogData from './data/catalog.json';
-import discoveryQuestionsData from './data/discovery-questions.json';
-import gapAnalysisData from './data/gap-analysis.json';
-import historyData from './data/history.json';
-import mentorConversationsData from './data/mentor-conversations.json';
-import progressData from './data/progress.json';
-import recommendationsData from './data/recommendations.json';
-import roadmapsData from './data/roadmaps.json';
-import skillsData from './data/skills.json';
-import studentsData from './data/students.json';
-
 export interface MockUser {
   user_id: number;
   email: string;
@@ -313,24 +300,57 @@ export interface MockUser {
   student_id: number | null;
 }
 
-/** Deep-cloned, mutable in-memory copies of the JSON fixtures so CRUD mock endpoints persist changes for the session. */
+const DEFAULT_DEMO_PASSWORD = 'Password123!';
+
+const DEFAULT_USERS: MockUser[] = [
+  { user_id: 1, email: 'admin@example.com', full_name: 'Admin User', role: 'ADMIN', is_active: true, student_id: null },
+  { user_id: 2, email: 'counselor@example.com', full_name: 'Counselor User', role: 'COUNSELOR', is_active: true, student_id: null },
+  { user_id: 3, email: 'mentor@example.com', full_name: 'Mentor User', role: 'MENTOR', is_active: true, student_id: null },
+  { user_id: 4, email: 'readonly@example.com', full_name: 'Read Only User', role: 'READ_ONLY', is_active: true, student_id: null },
+  { user_id: 5, email: 'student@example.com', full_name: 'Student User', role: 'STUDENT', is_active: true, student_id: 1 },
+];
+
+const DEFAULT_STUDENTS: Student[] = [
+  {
+    student_id: 1,
+    name: 'Student User',
+    age: 18,
+    education: 'Grade 12',
+    location: null,
+    board: null,
+    subjects: [],
+    created_date: new Date().toISOString(),
+  },
+];
+
+const DEFAULT_ANALYTICS: DashboardSummary = {
+  career_demand_trends: { chart_type: 'bar', data: [] },
+  cohort_skill_gap_heatmap: { chart_type: 'heatmap', data: [] },
+  roadmap_completion_rate: { chart_type: 'bar', overall_average_completion_percentage: 0, by_career: [] },
+  top_recommended_careers: { chart_type: 'bar', data: [] },
+  certification_uptake: { chart_type: 'funnel', data: [] },
+  active_students: 1,
+  assessments_completed_today: 0,
+};
+
+/** Mutable in-memory defaults so mock mode works without external JSON fixture files. */
 export const mockStore = {
-  demoPassword: authData.demoPassword,
-  users: structuredClone(authData.users) as MockUser[],
-  students: structuredClone(studentsData) as Student[],
-  history: structuredClone(historyData) as Record<string, StudentHistory>,
-  skills: structuredClone(skillsData) as Record<string, { skills: StudentSkill[]; behavioralMetrics: BehavioralMetric[] }>,
-  questions: structuredClone(discoveryQuestionsData) as DiscoveryQuestion[],
-  recommendations: structuredClone(recommendationsData) as Record<string, CareerRecommendation[]>,
-  gapAnalysis: structuredClone(gapAnalysisData) as Record<string, GapAnalysisResponse>,
-  roadmaps: structuredClone(roadmapsData) as Record<string, Roadmap[]>,
-  mentorConversations: structuredClone(mentorConversationsData) as Record<string, MentorConversation[]>,
-  progress: structuredClone(progressData) as Record<string, Progress[]>,
-  careers: structuredClone(catalogData.careers) as unknown as CareerDefinition[],
-  certifications: structuredClone(catalogData.certifications) as Certification[],
-  projects: structuredClone(catalogData.projects) as Project[],
-  analytics: structuredClone(analyticsData) as unknown as DashboardSummary,
-  /** question ids already answered per student, session-only (not part of the JSON fixtures). */
+  demoPassword: DEFAULT_DEMO_PASSWORD,
+  users: structuredClone(DEFAULT_USERS) as MockUser[],
+  students: structuredClone(DEFAULT_STUDENTS) as Student[],
+  history: {} as Record<string, StudentHistory>,
+  skills: {} as Record<string, { skills: StudentSkill[]; behavioralMetrics: BehavioralMetric[] }>,
+  questions: [] as DiscoveryQuestion[],
+  recommendations: {} as Record<string, CareerRecommendation[]>,
+  gapAnalysis: {} as Record<string, GapAnalysisResponse>,
+  roadmaps: {} as Record<string, Roadmap[]>,
+  mentorConversations: {} as Record<string, MentorConversation[]>,
+  progress: {} as Record<string, Progress[]>,
+  careers: [] as CareerDefinition[],
+  certifications: [] as Certification[],
+  projects: [] as Project[],
+  analytics: structuredClone(DEFAULT_ANALYTICS) as DashboardSummary,
+  /** question ids already answered per student, session-only (not part of the seeded defaults). */
   discoveryAnswered: new Map<number, Set<number>>(),
   discoveryResponses: [] as { response_id: number; student_id: number; question_id: number; selected_option: string }[],
 };
@@ -346,6 +366,7 @@ export function findAcademicHistory(studentId: number): AcademicHistory[] {
 export function findLearningPlatformData(studentId: number): LearningPlatformData[] {
   return mockStore.history[studentId]?.learning_platform_data ?? [];
 }
+
 
 ---------------------------------------------------------
 C:\ws\agent\admission\counselor-agent\backend\agents\assessment_agent\__init__.py
