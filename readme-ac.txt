@@ -1,3 +1,353 @@
+C:\ws\agent\admission\counselor-agent\frontend\src\app\mocks\mock-api.interceptor.ts
+import { HttpErrorResponse, HttpInterceptorFn, HttpRequest, HttpResponse } from '@angular/common/http';
+import { Observable, of, throwError } from 'rxjs';
+import { delay } from 'rxjs/operators';
+
+import { environment } from '../../environments/environment';
+import { CertificationCreate, CertificationUpdate, ProjectCreate, ProjectUpdate } from '../models/catalog.model';
+import { DiscoveryAnswerRequest, DiscoveryQuestionCreate, DiscoveryQuestionUpdate } from '../models/discovery.model';
+import { MentorChatRequest } from '../models/mentor.model';
+import { Student, StudentCreate, StudentUpdate } from '../models/student.model';
+import { findAcademicHistory, findLearningPlatformData, mockStore, nextId } from './mock-store';
+
+const MOCK_DELAY_MS = 200;
+const API_MARKER = '/api/v1';
+
+function pathOf(req: HttpRequest<unknown>): string {
+  const markerIndex = req.url.indexOf(API_MARKER);
+  const raw = markerIndex === -1 ? req.url : req.url.slice(markerIndex + API_MARKER.length);
+  const queryIndex = raw.indexOf('?');
+  return queryIndex === -1 ? raw : raw.slice(0, queryIndex);
+}
+
+function ok(status: number, body?: unknown): Observable<HttpResponse<unknown>> {
+  return of(new HttpResponse({ status, body: body === undefined ? null : (body as object) })).pipe(
+    delay(MOCK_DELAY_MS),
+  );
+}
+
+function fail(status: number, detail: string): Observable<never> {
+  return throwError(() => new HttpErrorResponse({ status, error: { detail } })).pipe(
+    delay(MOCK_DELAY_MS),
+  ) as Observable<never>;
+}
+
+/**
+ * Serves fixture JSON data (see ./data/*.json via mock-store.ts) instead of calling the real
+ * backend whenever environment.useMockData is true. Every route/shape here must mirror the
+ * real FastAPI contract exactly so services need no changes to work against either source.
+ */
+export const mockApiInterceptor: HttpInterceptorFn = (req, next) => {
+  if (!environment.useMockData) {
+    return next(req);
+  }
+
+  const path = pathOf(req);
+  const method = req.method;
+  let match: RegExpMatchArray | null;
+
+  // ---- Auth ----
+  if (method === 'POST' && path === '/auth/login') {
+    const { email, password } = req.body as { email: string; password: string };
+    const user = mockStore.users.find((u) => u.email === email);
+    if (!user || password !== mockStore.demoPassword) {
+      return fail(401, 'Invalid email or password');
+    }
+    return ok(200, {
+      access_token: `mock-token-${user.user_id}`,
+      refresh_token: `mock-refresh-${user.user_id}`,
+      token_type: 'bearer',
+    });
+  }
+
+  if (method === 'GET' && path === '/auth/me') {
+    const userId = Number((req.headers.get('Authorization') ?? '').replace('Bearer mock-token-', ''));
+    const user = mockStore.users.find((u) => u.user_id === userId);
+    return user ? ok(200, user) : fail(401, 'Not authenticated');
+  }
+
+  if (method === 'POST' && path === '/auth/refresh') {
+    const refreshToken = (req.body as { refresh_token: string } | null)?.refresh_token ?? '';
+    const userId = Number(refreshToken.replace('mock-refresh-', ''));
+    const user = mockStore.users.find((u) => u.user_id === userId);
+    return user ? ok(200, { access_token: `mock-token-${userId}`, token_type: 'bearer' }) : fail(401, 'Invalid refresh token');
+  }
+
+  // ---- Students ----
+  if (method === 'GET' && path === '/students') {
+    return ok(200, mockStore.students);
+  }
+  if (method === 'POST' && path === '/students') {
+    const payload = req.body as StudentCreate;
+    const student: Student = {
+      student_id: nextId(mockStore.students, 'student_id'),
+      name: payload.name,
+      age: payload.age,
+      education: payload.education,
+      location: payload.location ?? null,
+      board: payload.board ?? null,
+      subjects: payload.subjects ?? null,
+      created_date: new Date().toISOString(),
+    };
+    mockStore.students.push(student);
+    return ok(201, student);
+  }
+  if ((match = path.match(/^\/students\/(\d+)$/))) {
+    const studentId = Number(match[1]);
+    const index = mockStore.students.findIndex((s) => s.student_id === studentId);
+    if (method === 'GET') {
+      return index === -1 ? fail(404, 'Student not found') : ok(200, mockStore.students[index]);
+    }
+    if (method === 'PUT') {
+      if (index === -1) return fail(404, 'Student not found');
+      const update = req.body as StudentUpdate;
+      mockStore.students[index] = { ...mockStore.students[index], ...update };
+      return ok(200, mockStore.students[index]);
+    }
+    if (method === 'DELETE') {
+      if (index === -1) return fail(404, 'Student not found');
+      mockStore.students.splice(index, 1);
+      return ok(204);
+    }
+  }
+  if ((match = path.match(/^\/students\/(\d+)\/history$/)) && method === 'GET') {
+    const studentId = Number(match[1]);
+    return ok(200, { academic_history: findAcademicHistory(studentId), learning_platform_data: findLearningPlatformData(studentId) });
+  }
+  if ((match = path.match(/^\/students\/(\d+)\/skills$/)) && method === 'GET') {
+    return ok(200, mockStore.skills[Number(match[1])]?.skills ?? []);
+  }
+  if ((match = path.match(/^\/students\/(\d+)\/behavioral-metrics$/)) && method === 'GET') {
+    return ok(200, mockStore.skills[Number(match[1])]?.behavioralMetrics ?? []);
+  }
+
+  // ---- Discovery ----
+  if (method === 'GET' && path === '/discovery/next-question') {
+    const studentId = Number(req.params.get('studentId'));
+    const answered = mockStore.discoveryAnswered.get(studentId) ?? new Set<number>();
+    const next = mockStore.questions.find((q) => !answered.has(q.question_id));
+    return next ? ok(200, next) : ok(204);
+  }
+  if (method === 'POST' && path === '/discovery/answer') {
+    const payload = req.body as DiscoveryAnswerRequest;
+    const answered = mockStore.discoveryAnswered.get(payload.student_id) ?? new Set<number>();
+    answered.add(payload.question_id);
+    mockStore.discoveryAnswered.set(payload.student_id, answered);
+    const response = {
+      response_id: mockStore.discoveryResponses.length + 1,
+      student_id: payload.student_id,
+      question_id: payload.question_id,
+      selected_option: payload.selected_option,
+    };
+    mockStore.discoveryResponses.push(response);
+    return ok(201, response);
+  }
+  if (method === 'GET' && path === '/discovery/questions') {
+    return ok(200, mockStore.questions);
+  }
+  if (method === 'POST' && path === '/discovery/questions') {
+    const payload = req.body as DiscoveryQuestionCreate;
+    const question = { question_id: nextId(mockStore.questions, 'question_id'), version: 1, ...payload };
+    mockStore.questions.push(question);
+    return ok(201, question);
+  }
+  if ((match = path.match(/^\/discovery\/questions\/(\d+)$/)) && method === 'PUT') {
+    const questionId = Number(match[1]);
+    const index = mockStore.questions.findIndex((q) => q.question_id === questionId);
+    if (index === -1) return fail(404, 'Question not found');
+    const update = req.body as DiscoveryQuestionUpdate;
+    mockStore.questions[index] = { ...mockStore.questions[index], ...update, version: mockStore.questions[index].version + 1 };
+    return ok(200, mockStore.questions[index]);
+  }
+
+  // ---- Recommendations ----
+  if ((match = path.match(/^\/recommendations\/students\/(\d+)$/)) && method === 'GET') {
+    return ok(200, mockStore.recommendations[Number(match[1])] ?? []);
+  }
+
+  // ---- Gap analysis ----
+  if ((match = path.match(/^\/gap-analysis\/(\d+)$/)) && method === 'GET') {
+    const result = mockStore.gapAnalysis[Number(match[1])];
+    return result ? ok(200, result) : fail(404, 'Recommendation not found');
+  }
+
+  // ---- Roadmaps ----
+  if ((match = path.match(/^\/roadmaps\/students\/(\d+)$/)) && method === 'GET') {
+    return ok(200, mockStore.roadmaps[Number(match[1])] ?? []);
+  }
+
+  // ---- Mentor ----
+  if (method === 'POST' && path === '/mentor/chat') {
+    const payload = req.body as MentorChatRequest;
+    const topRecommendation = mockStore.recommendations[payload.studentId]?.[0] ?? null;
+    const reply = topRecommendation
+      ? `Keep building your skills toward ${topRecommendation.career_name} - you're at a ${topRecommendation.match_score}% match. ${payload.message ? "Regarding your question: stay consistent and revisit your roadmap milestones." : ''}`
+      : "I don't have enough data on your profile yet - complete the discovery questionnaire first.";
+    const conversations = mockStore.mentorConversations[payload.studentId] ?? [];
+    conversations.push({
+      conversation_id: nextId(conversations, 'conversation_id'),
+      student_id: payload.studentId,
+      message: payload.message,
+      reply,
+      related_career: topRecommendation?.career_name ?? null,
+      created_date: new Date().toISOString(),
+    });
+    mockStore.mentorConversations[payload.studentId] = conversations;
+    return ok(200, { reply, relatedCareer: topRecommendation?.career_name ?? null });
+  }
+  if ((match = path.match(/^\/mentor\/students\/(\d+)$/)) && method === 'GET') {
+    return ok(200, mockStore.mentorConversations[Number(match[1])] ?? []);
+  }
+
+  // ---- Progress ----
+  if ((match = path.match(/^\/progress\/(\d+)$/)) && method === 'GET') {
+    return ok(200, mockStore.progress[Number(match[1])] ?? []);
+  }
+
+  // ---- Analytics ----
+  if (method === 'GET' && path === '/analytics/dashboard') {
+    return ok(200, mockStore.analytics);
+  }
+  if (method === 'GET' && path === '/analytics/career-demand-trends') {
+    return ok(200, mockStore.analytics.career_demand_trends);
+  }
+  if (method === 'GET' && path === '/analytics/skill-gap-heatmap') {
+    return ok(200, mockStore.analytics.cohort_skill_gap_heatmap);
+  }
+  if (method === 'GET' && path === '/analytics/roadmap-completion-rate') {
+    return ok(200, mockStore.analytics.roadmap_completion_rate);
+  }
+  if (method === 'GET' && path === '/analytics/top-recommended-careers') {
+    return ok(200, mockStore.analytics.top_recommended_careers);
+  }
+  if (method === 'GET' && path === '/analytics/certification-uptake') {
+    return ok(200, mockStore.analytics.certification_uptake);
+  }
+
+  // ---- Catalog ----
+  if (method === 'GET' && path === '/catalog/careers') {
+    return ok(200, mockStore.careers);
+  }
+  if (method === 'GET' && path === '/catalog/certifications') {
+    return ok(200, mockStore.certifications);
+  }
+  if (method === 'POST' && path === '/catalog/certifications') {
+    const payload = req.body as CertificationCreate;
+    const certification = { certification_id: nextId(mockStore.certifications, 'certification_id'), provider: null, ...payload };
+    mockStore.certifications.push(certification);
+    return ok(201, certification);
+  }
+  if ((match = path.match(/^\/catalog\/certifications\/(\d+)$/))) {
+    const certificationId = Number(match[1]);
+    const index = mockStore.certifications.findIndex((c) => c.certification_id === certificationId);
+    if (index === -1) return fail(404, 'Certification not found');
+    if (method === 'PUT') {
+      const update = req.body as CertificationUpdate;
+      mockStore.certifications[index] = { ...mockStore.certifications[index], ...update };
+      return ok(200, mockStore.certifications[index]);
+    }
+    if (method === 'DELETE') {
+      mockStore.certifications.splice(index, 1);
+      return ok(204);
+    }
+  }
+  if (method === 'GET' && path === '/catalog/projects') {
+    return ok(200, mockStore.projects);
+  }
+  if (method === 'POST' && path === '/catalog/projects') {
+    const payload = req.body as ProjectCreate;
+    const project = { project_id: nextId(mockStore.projects, 'project_id'), description: null, difficulty_level: null, ...payload };
+    mockStore.projects.push(project);
+    return ok(201, project);
+  }
+  if ((match = path.match(/^\/catalog\/projects\/(\d+)$/))) {
+    const projectId = Number(match[1]);
+    const index = mockStore.projects.findIndex((p) => p.project_id === projectId);
+    if (index === -1) return fail(404, 'Project not found');
+    if (method === 'PUT') {
+      const update = req.body as ProjectUpdate;
+      mockStore.projects[index] = { ...mockStore.projects[index], ...update };
+      return ok(200, mockStore.projects[index]);
+    }
+    if (method === 'DELETE') {
+      mockStore.projects.splice(index, 1);
+      return ok(204);
+    }
+  }
+
+  return fail(404, `No mock handler for ${method} ${path}`);
+};
+------------------------------------------------
+C:\ws\agent\admission\counselor-agent\frontend\src\app\mocks\mock-store.ts
+import { AcademicHistory, LearningPlatformData, StudentHistory } from '../models/history.model';
+import { DashboardSummary } from '../models/analytics.model';
+import { CareerDefinition, Certification, Project } from '../models/catalog.model';
+import { CareerRecommendation } from '../models/recommendation.model';
+import { DiscoveryQuestion } from '../models/discovery.model';
+import { GapAnalysisResponse } from '../models/gap-analysis.model';
+import { MentorConversation } from '../models/mentor.model';
+import { Progress } from '../models/progress.model';
+import { Roadmap } from '../models/roadmap.model';
+import { Student } from '../models/student.model';
+import { BehavioralMetric, StudentSkill } from '../models/skill.model';
+
+import authData from './data/auth.json';
+import analyticsData from './data/analytics.json';
+import catalogData from './data/catalog.json';
+import discoveryQuestionsData from './data/discovery-questions.json';
+import gapAnalysisData from './data/gap-analysis.json';
+import historyData from './data/history.json';
+import mentorConversationsData from './data/mentor-conversations.json';
+import progressData from './data/progress.json';
+import recommendationsData from './data/recommendations.json';
+import roadmapsData from './data/roadmaps.json';
+import skillsData from './data/skills.json';
+import studentsData from './data/students.json';
+
+export interface MockUser {
+  user_id: number;
+  email: string;
+  full_name: string;
+  role: string;
+  is_active: boolean;
+  student_id: number | null;
+}
+
+/** Deep-cloned, mutable in-memory copies of the JSON fixtures so CRUD mock endpoints persist changes for the session. */
+export const mockStore = {
+  demoPassword: authData.demoPassword,
+  users: structuredClone(authData.users) as MockUser[],
+  students: structuredClone(studentsData) as Student[],
+  history: structuredClone(historyData) as Record<string, StudentHistory>,
+  skills: structuredClone(skillsData) as Record<string, { skills: StudentSkill[]; behavioralMetrics: BehavioralMetric[] }>,
+  questions: structuredClone(discoveryQuestionsData) as DiscoveryQuestion[],
+  recommendations: structuredClone(recommendationsData) as Record<string, CareerRecommendation[]>,
+  gapAnalysis: structuredClone(gapAnalysisData) as Record<string, GapAnalysisResponse>,
+  roadmaps: structuredClone(roadmapsData) as Record<string, Roadmap[]>,
+  mentorConversations: structuredClone(mentorConversationsData) as Record<string, MentorConversation[]>,
+  progress: structuredClone(progressData) as Record<string, Progress[]>,
+  careers: structuredClone(catalogData.careers) as unknown as CareerDefinition[],
+  certifications: structuredClone(catalogData.certifications) as Certification[],
+  projects: structuredClone(catalogData.projects) as Project[],
+  analytics: structuredClone(analyticsData) as unknown as DashboardSummary,
+  /** question ids already answered per student, session-only (not part of the JSON fixtures). */
+  discoveryAnswered: new Map<number, Set<number>>(),
+  discoveryResponses: [] as { response_id: number; student_id: number; question_id: number; selected_option: string }[],
+};
+
+export function nextId<T>(items: T[], key: keyof T): number {
+  return items.reduce((max, item) => Math.max(max, Number(item[key]) || 0), 0) + 1;
+}
+
+export function findAcademicHistory(studentId: number): AcademicHistory[] {
+  return mockStore.history[studentId]?.academic_history ?? [];
+}
+
+export function findLearningPlatformData(studentId: number): LearningPlatformData[] {
+  return mockStore.history[studentId]?.learning_platform_data ?? [];
+}
+
+---------------------------------------------------------
 C:\ws\agent\admission\counselor-agent\backend\agents\assessment_agent\__init__.py
 
 -----------------------------------------------------------------
