@@ -1359,3 +1359,3293 @@ passlib[bcrypt]==1.7.4
 bcrypt==4.0.1
 python-multipart==0.0.9
 email-validator==2.2.0
+------------------------------
+C:\ws\agent\website-ais\scripts\init-db.sql
+-- Bootstrap DB user for the FastAPI backend.
+-- One consolidated app user (replaces the old Java stack's 3 separate per-service roles).
+
+CREATE USER ais_app_user WITH PASSWORD 'ais_app_pass';
+GRANT ALL PRIVILEGES ON DATABASE ais_db TO ais_app_user;
+------------------------------------------
+C:\ws\agent\website-ais\scripts\schema-and-seed-data.sql
+-- ============================================================================
+-- AIS Website - PostgreSQL schema + sample data
+-- ============================================================================
+-- Mirrors the SQLAlchemy models in backend-python/app/models.py exactly
+-- (table/column names, types, nullability, FKs, indexes).
+--
+-- Not required for normal local/docker-compose use: the FastAPI app already
+-- creates these tables (Base.metadata.create_all()) and seeds minimal demo
+-- data (app/seed.py) automatically on startup. Run this script manually
+-- against ais_db (e.g. via psql) when you want a richer, standalone dataset
+-- for demos, manual QA, or reporting - it is idempotent (each insert is
+-- guarded by an emptiness check, same pattern as app/seed.py) so running it
+-- again, or starting the app afterwards, will not create duplicate rows.
+--
+-- Usage:
+--   psql -h localhost -U ais_app_user -d ais_db -f scripts/schema-and-seed-data.sql
+-- ============================================================================
+
+-- ---------------------------------------------------------------------------
+-- Tables
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username VARCHAR(255) NOT NULL UNIQUE,
+    password VARCHAR(500) NOT NULL,
+    role     VARCHAR(50) NOT NULL,          -- ADMIN | EDITOR
+    status   VARCHAR(20) DEFAULT 'ACTIVE'
+);
+
+CREATE TABLE IF NOT EXISTS company_info (
+    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    tagline      VARCHAR(500),
+    mission      VARCHAR(2000),
+    vision       VARCHAR(2000),
+    founder_bio  TEXT,
+    address      VARCHAR(500),
+    phone        VARCHAR(50),
+    email        VARCHAR(255),
+    linkedin_url VARCHAR(255)
+);
+
+CREATE TABLE IF NOT EXISTS service_offering (
+    id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    step_number         INTEGER NOT NULL,
+    title               VARCHAR(255) NOT NULL,
+    description         TEXT,
+    deliverables        VARCHAR(2000),
+    estimated_duration  VARCHAR(100),
+    status              VARCHAR(20) DEFAULT 'ACTIVE'
+);
+
+CREATE TABLE IF NOT EXISTS industry (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name          VARCHAR(100) NOT NULL UNIQUE,
+    icon_url      VARCHAR(500),
+    description   TEXT,
+    pain_points   TEXT,
+    how_ai_helps  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS use_case (
+    id                 BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    industry_id        BIGINT NOT NULL REFERENCES industry(id),
+    name               VARCHAR(255) NOT NULL,
+    problem_statement  TEXT,
+    proposed_solution  TEXT,
+    expected_roi       VARCHAR(500)
+);
+CREATE INDEX IF NOT EXISTS idx_use_case_industry_id ON use_case(industry_id);
+
+CREATE TABLE IF NOT EXISTS case_study (
+    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    industry_id     BIGINT REFERENCES industry(id),
+    client_type     VARCHAR(255),
+    challenge       TEXT,
+    solution        TEXT,
+    tech_stack      VARCHAR(500),
+    results         TEXT,
+    published_date  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_case_study_industry_id ON case_study(industry_id);
+
+CREATE TABLE IF NOT EXISTS testimonial (
+    id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    client_name       VARCHAR(255) NOT NULL,
+    organization      VARCHAR(255),
+    designation       VARCHAR(255),
+    testimonial_text  TEXT NOT NULL,
+    rating            INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS contact_message (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name          VARCHAR(255) NOT NULL,
+    email         VARCHAR(255) NOT NULL,
+    mobile        VARCHAR(20),
+    subject       VARCHAR(255),
+    message       TEXT NOT NULL,
+    created_date  TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_contact_message_created_date ON contact_message(created_date);
+
+CREATE TABLE IF NOT EXISTS consultation_request (
+    id                          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    reference_number            VARCHAR(50) NOT NULL UNIQUE,
+    organization_name           VARCHAR(255) NOT NULL,
+    contact_person              VARCHAR(255) NOT NULL,
+    mobile                      VARCHAR(20) NOT NULL,
+    email                       VARCHAR(255) NOT NULL,
+    industry                    VARCHAR(100) NOT NULL,
+    organization_size           VARCHAR(100),
+    requirements                TEXT,
+    preferred_engagement_step   VARCHAR(100),
+    status                      VARCHAR(50) NOT NULL DEFAULT 'NEW',
+    internal_remarks            TEXT,
+    created_date                TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_consultation_request_industry ON consultation_request(industry);
+CREATE INDEX IF NOT EXISTS idx_consultation_request_status ON consultation_request(status);
+
+-- ---------------------------------------------------------------------------
+-- Sample data
+-- ---------------------------------------------------------------------------
+
+-- 2 users: admin/admin123, editor/editor123 (BCrypt hashes - same as app/seed.py)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM users) THEN
+        INSERT INTO users (username, password, role, status) VALUES
+            ('admin', '$2b$10$RO6fbxFi5y0VW6XjeVO2X.edAx3TSZFxU2hterHektIJvqpQ22wx6', 'ADMIN', 'ACTIVE'),
+            ('editor', '$2b$10$612WWFy7jKg5hnX4hSZ5TuMsm3wFFvPt4DVPqagz1HxOOjVPQsMem', 'EDITOR', 'ACTIVE');
+    END IF;
+END $$;
+
+-- 1 company info record
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM company_info) THEN
+        INSERT INTO company_info (name, tagline, mission, vision, founder_bio, address, phone, email, linkedin_url) VALUES
+            ('AIS - Artificial Intelligent Solutions',
+             'Custom AI Agents that increase ROI and reduce manual workload',
+             'Empower organizations with AI agents tailored to their operations.',
+             'A world where every organization has an AI teammate.',
+             'Solution architect specializing in applied AI for education, manufacturing, and retail.',
+             'Remote-first', '+1-000-000-0000', 'hello@ais.example', 'https://linkedin.com/company/ais');
+    END IF;
+END $$;
+
+-- 4 service offerings (the 4-step engagement)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM service_offering) THEN
+        INSERT INTO service_offering (step_number, title, description, deliverables, estimated_duration, status) VALUES
+            (1, 'Design Phase', 'Discovery workshops and solution architecture.', 'Architecture doc, roadmap', '2 weeks', 'ACTIVE'),
+            (2, 'Documentation Phase', 'Functional and technical specifications.', 'FSD, TSD', '1 week', 'ACTIVE'),
+            (3, 'Backend Development', 'API and data platform build-out.', 'Deployed backend services', '4 weeks', 'ACTIVE'),
+            (4, 'Frontend Development', 'User-facing application build-out.', 'Deployed frontend application', '3 weeks', 'ACTIVE');
+    END IF;
+END $$;
+
+-- 4 industries
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM industry) THEN
+        INSERT INTO industry (name, icon_url, description, pain_points, how_ai_helps) VALUES
+            ('College', NULL, 'Higher education institutions.',
+             'Manual admissions and student support.',
+             'Automates admissions triage and helpdesk queries.'),
+            ('School', NULL, 'K-12 schools.',
+             'Repetitive parent/student queries.',
+             'Handles FAQs and routes escalations.'),
+            ('Factory', NULL, 'Manufacturing facilities.',
+             'Manual quality/maintenance logging.',
+             'Automates inspection logging and alerts.'),
+            ('Shopping Mall', NULL, 'Retail/shopping centers.',
+             'High-volume visitor questions.',
+             'Automates visitor assistance and directory lookups.');
+    END IF;
+END $$;
+
+-- 12 use cases (3 per industry)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM use_case) THEN
+        INSERT INTO use_case (industry_id, name, problem_statement, proposed_solution, expected_roi) VALUES
+            ((SELECT id FROM industry WHERE name = 'College'), 'Admissions Inquiry Chatbot',
+             'High volume of repetitive admissions questions overwhelms front-desk staff during peak season.',
+             '24/7 AI agent trained on the admissions handbook answers FAQs and escalates edge cases to staff.',
+             '30-40% reduction in admissions staff workload'),
+            ((SELECT id FROM industry WHERE name = 'College'), 'Fee Reminder Automation',
+             'Manual fee-due reminders are inconsistent, causing late payments.',
+             'Automated agent sends personalized reminders and answers payment-plan questions.',
+             '15% reduction in late fee payments'),
+            ((SELECT id FROM industry WHERE name = 'College'), 'Alumni Engagement Agent',
+             'Alumni outreach for donations/events is manual and low-response.',
+             'AI agent personalizes outreach campaigns based on alumni engagement history.',
+             '2x increase in alumni event RSVP rate'),
+            ((SELECT id FROM industry WHERE name = 'School'), 'Homework Helper Bot',
+             'Parents and students need after-hours help with assignment questions.',
+             'AI tutoring agent answers subject-specific questions and flags topics needing teacher follow-up.',
+             '20% reduction in parent helpdesk tickets'),
+            ((SELECT id FROM industry WHERE name = 'School'), 'Parent Query Router',
+             'Front-office staff spend hours a day answering the same logistics questions.',
+             'AI agent handles bus routes, timings, and fee queries, routing only exceptions to staff.',
+             '25% reduction in front-office call volume'),
+            ((SELECT id FROM industry WHERE name = 'School'), 'Attendance Anomaly Detection',
+             'Chronic absenteeism patterns are discovered too late.',
+             'AI agent monitors attendance trends and proactively alerts counselors.',
+             '10% improvement in early intervention rate'),
+            ((SELECT id FROM industry WHERE name = 'Factory'), 'Predictive Maintenance Agent',
+             'Unplanned equipment downtime disrupts production schedules.',
+             'AI agent analyzes sensor data to predict failures before they occur.',
+             '20% reduction in unplanned downtime'),
+            ((SELECT id FROM industry WHERE name = 'Factory'), 'Quality Inspection Vision Agent',
+             'Manual visual quality inspection is slow and inconsistent.',
+             'Computer-vision AI agent flags defects in real time on the production line.',
+             '25% fewer missed defects'),
+            ((SELECT id FROM industry WHERE name = 'Factory'), 'Safety Compliance Monitor',
+             'Safety-gear compliance checks rely on manual spot audits.',
+             'AI agent uses camera feeds to flag PPE compliance gaps in real time.',
+             '30% reduction in safety violations'),
+            ((SELECT id FROM industry WHERE name = 'Shopping Mall'), 'Visitor Assistance Kiosk Agent',
+             'Visitors struggle to find stores, offers, and amenities quickly.',
+             'AI concierge kiosk/agent answers directory and promotion questions instantly.',
+             '15% increase in visitor satisfaction scores'),
+            ((SELECT id FROM industry WHERE name = 'Shopping Mall'), 'Foot Traffic Analytics Agent',
+             'Mall management lacks real-time insight into zone-level foot traffic.',
+             'AI agent aggregates camera/sensor data into actionable occupancy dashboards.',
+             '10% improvement in tenant space utilization'),
+            ((SELECT id FROM industry WHERE name = 'Shopping Mall'), 'Tenant Helpdesk Automation',
+             'Tenant maintenance and billing queries take days to resolve manually.',
+             'AI agent triages tenant requests and auto-routes to the right facilities team.',
+             '35% faster tenant request resolution');
+    END IF;
+END $$;
+
+-- 6 case studies
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM case_study) THEN
+        INSERT INTO case_study (industry_id, client_type, challenge, solution, tech_stack, results, published_date) VALUES
+            ((SELECT id FROM industry WHERE name = 'College'), 'College',
+             'High admissions inquiry volume.', 'Deployed an admissions AI agent.',
+             'FastAPI, Postgres', '40% faster response time.', '2026-03-10 09:00:00+00'),
+            ((SELECT id FROM industry WHERE name = 'Factory'), 'Factory',
+             'Manual inspection logging.', 'Deployed a quality-inspection AI agent.',
+             'FastAPI, Postgres', '25% fewer missed defects.', '2026-04-02 09:00:00+00'),
+            ((SELECT id FROM industry WHERE name = 'School'), 'School',
+             'Overloaded front-office staff during enrollment season.', 'Deployed a parent-query AI agent.',
+             'FastAPI, Postgres, Angular', '25% reduction in front-office call volume.', '2026-05-14 09:00:00+00'),
+            ((SELECT id FROM industry WHERE name = 'Shopping Mall'), 'Shopping Mall',
+             'Visitors could not find stores/promotions quickly.', 'Deployed a visitor-assistance AI agent.',
+             'FastAPI, Postgres, Angular', '15% increase in visitor satisfaction scores.', '2026-06-01 09:00:00+00'),
+            ((SELECT id FROM industry WHERE name = 'College'), 'College',
+             'Declining alumni donation engagement.', 'Deployed an alumni-engagement AI agent.',
+             'FastAPI, Postgres', '2x increase in alumni event RSVP rate.', '2026-06-20 09:00:00+00'),
+            ((SELECT id FROM industry WHERE name = 'Factory'), 'Factory',
+             'Frequent unplanned equipment downtime.', 'Deployed a predictive-maintenance AI agent.',
+             'FastAPI, Postgres', '20% reduction in unplanned downtime.', '2026-07-08 09:00:00+00');
+    END IF;
+END $$;
+
+-- 8 testimonials
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM testimonial) THEN
+        INSERT INTO testimonial (client_name, organization, designation, testimonial_text, rating) VALUES
+            ('Jane Doe', 'Greenfield College', 'Registrar',
+             'The admissions agent transformed our intake process.', 5),
+            ('John Smith', 'Nexus Auto Components', 'Plant Manager',
+             'Reduced our inspection backlog significantly.', 4),
+            ('Priya Nair', 'Lakeside School District', 'Principal',
+             'Parents get instant answers now instead of waiting on hold.', 5),
+            ('Carlos Mendes', 'Metro Plaza Mall', 'Operations Director',
+             'Visitor satisfaction scores went up within the first month.', 4),
+            ('Aisha Khan', 'Riverside University', 'Alumni Relations Lead',
+             'Our alumni engagement campaigns finally feel personalized.', 5),
+            ('Tom Becker', 'Precision Tools Manufacturing', 'Head of Quality',
+             'The predictive maintenance agent paid for itself in one quarter.', 5),
+            ('Maria Garcia', 'Sunrise Academy', 'Vice Principal',
+             'Front-office staff can finally focus on students instead of repetitive calls.', 4),
+            ('David Lee', 'Harborview Retail Group', 'General Manager',
+             'The foot-traffic analytics agent gave us insights we never had before.', 4);
+    END IF;
+END $$;
+
+-- 15 contact messages
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM contact_message) THEN
+        INSERT INTO contact_message (name, email, mobile, subject, message, created_date) VALUES
+            ('Alice Johnson', 'alice.johnson@example.com', '+14085550101', 'General Inquiry', 'Interested in learning more about your AI agent offerings.', '2026-05-02 10:15:00+00'),
+            ('Brian Chen', 'brian.chen@example.com', '+14085550102', 'Pricing', 'Could you share pricing details for a mid-size college deployment?', '2026-05-06 14:20:00+00'),
+            ('Carla Diaz', 'carla.diaz@example.com', '+14085550103', 'Partnership', 'We would like to explore a reseller partnership.', '2026-05-11 09:05:00+00'),
+            ('Derek Wong', 'derek.wong@example.com', '+14085550104', 'Support', 'Having trouble accessing the demo environment.', '2026-05-15 16:40:00+00'),
+            ('Elena Petrova', 'elena.petrova@example.com', '+14085550105', 'General Inquiry', 'What industries do you currently support?', '2026-05-20 11:30:00+00'),
+            ('Farhan Ali', 'farhan.ali@example.com', '+14085550106', 'Demo Request', 'Requesting a live demo for our manufacturing plant.', '2026-05-25 13:00:00+00'),
+            ('Grace Kim', 'grace.kim@example.com', '+14085550107', 'Careers', 'Do you have any open AI engineering roles?', '2026-06-01 08:45:00+00'),
+            ('Hassan Sheikh', 'hassan.sheikh@example.com', '+14085550108', 'General Inquiry', 'Interested in the visitor-assistance kiosk agent for our mall.', '2026-06-05 17:10:00+00'),
+            ('Irene Novak', 'irene.novak@example.com', '+14085550109', 'Support', 'Need help integrating the API with our existing CRM.', '2026-06-10 12:25:00+00'),
+            ('Jack Turner', 'jack.turner@example.com', '+14085550110', 'Pricing', 'Looking for a quote for a district-wide school rollout.', '2026-06-14 15:50:00+00'),
+            ('Kavita Rao', 'kavita.rao@example.com', '+14085550111', 'General Inquiry', 'Can your agents integrate with SAP?', '2026-06-19 09:35:00+00'),
+            ('Liam O''Brien', 'liam.obrien@example.com', '+14085550112', 'Demo Request', 'Would like to see the predictive maintenance dashboard.', '2026-06-24 10:00:00+00'),
+            ('Maya Fernandes', 'maya.fernandes@example.com', '+14085550113', 'Partnership', 'Exploring a co-marketing opportunity for the education sector.', '2026-06-29 14:15:00+00'),
+            ('Noah Kim', 'noah.kim@example.com', '+14085550114', 'Support', 'Reference number AIS-20260602-0001 - need a status update.', '2026-07-03 11:05:00+00'),
+            ('Olivia Brown', 'olivia.brown@example.com', '+14085550115', 'General Inquiry', 'What does the 4-step engagement process look like?', '2026-07-08 16:20:00+00');
+    END IF;
+END $$;
+
+-- 30 consultation requests (varied industries/statuses across the BR-2 funnel)
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM consultation_request) THEN
+        INSERT INTO consultation_request (
+            reference_number, organization_name, contact_person, mobile, email, industry,
+            organization_size, requirements, preferred_engagement_step, status, internal_remarks, created_date
+        ) VALUES
+            ('AIS-20260504-0001', 'Greenfield College', 'Susan Park', '+14085551001', 'susan.park@greenfieldcollege.example', 'College', '1000-5000 students', 'Need an admissions inquiry agent for peak season.', 'Design Phase', 'WON', 'Signed 12-month contract.', '2026-05-04 09:00:00+00'),
+            ('AIS-20260504-0002', 'Lakeside School District', 'Mark Ibrahim', '+14085551002', 'mark.ibrahim@lakesideschools.example', 'School', '5000+ students', 'Looking to reduce front-office call volume.', 'Documentation Phase', 'PROPOSAL_SENT', NULL, '2026-05-04 11:30:00+00'),
+            ('AIS-20260504-0003', 'Nexus Auto Components', 'Rachel Ford', '+14085551003', 'rachel.ford@nexusauto.example', 'Factory', '500-1000 employees', 'Interested in a quality-inspection vision agent.', 'Backend Development', 'WON', 'Rollout completed successfully.', '2026-05-04 15:45:00+00'),
+            ('AIS-20260518-0001', 'Metro Plaza Mall', 'Victor Alonso', '+14085551004', 'victor.alonso@metroplaza.example', 'Shopping Mall', '100-300 stores', 'Want a visitor assistance kiosk agent.', 'Design Phase', 'NEGOTIATION', NULL, '2026-05-18 10:00:00+00'),
+            ('AIS-20260518-0002', 'Riverside University', 'Helena Cruz', '+14085551005', 'helena.cruz@riverside.example', 'College', '5000+ students', 'Need an alumni engagement agent.', 'Documentation Phase', 'QUALIFIED', NULL, '2026-05-18 13:20:00+00'),
+            ('AIS-20260518-0003', 'Sunrise Academy', 'Peter Novak', '+14085551006', 'peter.novak@sunriseacademy.example', 'School', '1000-2000 students', 'Homework helper bot for after-hours support.', 'Design Phase', 'CONTACTED', NULL, '2026-05-18 16:10:00+00'),
+            ('AIS-20260602-0001', 'Precision Tools Manufacturing', 'Angela Ruiz', '+14085551007', 'angela.ruiz@precisiontools.example', 'Factory', '200-500 employees', 'Predictive maintenance for CNC machines.', 'Backend Development', 'NEGOTIATION', NULL, '2026-06-02 09:15:00+00'),
+            ('AIS-20260602-0002', 'Harborview Retail Group', 'Samuel Osei', '+14085551008', 'samuel.osei@harborview.example', 'Shopping Mall', '50-100 stores', 'Foot traffic analytics for 3 mall locations.', 'Design Phase', 'QUALIFIED', NULL, '2026-06-02 11:40:00+00'),
+            ('AIS-20260602-0003', 'Bright Future College', 'Dana Whitfield', '+14085551009', 'dana.whitfield@brightfuture.example', 'College', '2000-5000 students', 'Fee reminder automation for the finance office.', 'Documentation Phase', 'NEW', NULL, '2026-06-02 14:05:00+00'),
+            ('AIS-20260602-0004', 'Cedar Hill School', 'Omar Farouk', '+14085551010', 'omar.farouk@cedarhillschool.example', 'School', '500-1000 students', 'Parent query router for admissions season.', 'Design Phase', 'NEW', NULL, '2026-06-02 17:30:00+00'),
+            ('AIS-20260615-0001', 'Ironclad Manufacturing', 'Teresa Lin', '+14085551011', 'teresa.lin@ironclad.example', 'Factory', '1000+ employees', 'Safety compliance monitoring across 3 plants.', 'Backend Development', 'PROPOSAL_SENT', NULL, '2026-06-15 09:00:00+00'),
+            ('AIS-20260615-0002', 'Grandview Mall', 'Nathaniel Brooks', '+14085551012', 'nathaniel.brooks@grandviewmall.example', 'Shopping Mall', '100-200 stores', 'Tenant helpdesk automation.', 'Documentation Phase', 'CONTACTED', NULL, '2026-06-15 12:15:00+00'),
+            ('AIS-20260615-0003', 'Eastwood College', 'Fatima Zahra', '+14085551013', 'fatima.zahra@eastwoodcollege.example', 'College', '3000-6000 students', 'Admissions inquiry chatbot for open house season.', 'Design Phase', 'LOST', 'Chose an in-house solution instead.', '2026-06-15 15:50:00+00'),
+            ('AIS-20260615-0004', 'Northfield School District', 'Gerald Kim', '+14085551014', 'gerald.kim@northfield.example', 'School', '4000+ students', 'Attendance anomaly detection across all campuses.', 'Backend Development', 'NEW', NULL, '2026-06-15 18:20:00+00'),
+            ('AIS-20260629-0001', 'Vantage Auto Parts', 'Isabelle Moreau', '+14085551015', 'isabelle.moreau@vantageauto.example', 'Factory', '300-600 employees', 'Quality inspection vision agent for the assembly line.', 'Design Phase', 'QUALIFIED', NULL, '2026-06-29 09:10:00+00'),
+            ('AIS-20260629-0002', 'Union Square Mall', 'Marcus Webb', '+14085551016', 'marcus.webb@unionsquaremall.example', 'Shopping Mall', '150-250 stores', 'Visitor assistance kiosk for the new east wing.', 'Documentation Phase', 'NEW', NULL, '2026-06-29 12:35:00+00'),
+            ('AIS-20260629-0003', 'Hillcrest College', 'Naomi Patel', '+14085551017', 'naomi.patel@hillcrestcollege.example', 'College', '2000-4000 students', 'Alumni engagement agent for the annual fund drive.', 'Design Phase', 'CONTACTED', NULL, '2026-06-29 16:00:00+00'),
+            ('AIS-20260710-0001', 'Maple Ridge School', 'Oscar Delgado', '+14085551018', 'oscar.delgado@mapleridge.example', 'School', '800-1500 students', 'Homework helper bot pilot for grades 9-12.', 'Design Phase', 'NEW', NULL, '2026-07-10 09:20:00+00'),
+            ('AIS-20260710-0002', 'Falcon Industries', 'Priyanka Desai', '+14085551019', 'priyanka.desai@falconindustries.example', 'Factory', '600-900 employees', 'Predictive maintenance for hydraulic presses.', 'Backend Development', 'PROPOSAL_SENT', NULL, '2026-07-10 11:45:00+00'),
+            ('AIS-20260710-0003', 'Silver Oak Mall', 'Quentin Harris', '+14085551020', 'quentin.harris@silveroakmall.example', 'Shopping Mall', '80-150 stores', 'Tenant helpdesk automation and billing triage.', 'Documentation Phase', 'QUALIFIED', NULL, '2026-07-10 14:10:00+00'),
+            ('AIS-20260710-0004', 'Westfield University', 'Rosa Delgado', '+14085551021', 'rosa.delgado@westfielduniversity.example', 'College', '6000+ students', 'Fee reminder automation for financial aid office.', 'Design Phase', 'CONTACTED', NULL, '2026-07-10 17:00:00+00'),
+            ('AIS-20260722-0001', 'Pinehill School District', 'Samuel Ortiz', '+14085551022', 'samuel.ortiz@pinehillschools.example', 'School', '3000-5000 students', 'Parent query router for 6 campuses.', 'Design Phase', 'NEW', NULL, '2026-07-22 09:30:00+00'),
+            ('AIS-20260722-0002', 'Redwood Manufacturing', 'Tanya Fitzgerald', '+14085551023', 'tanya.fitzgerald@redwoodmfg.example', 'Factory', '400-700 employees', 'Safety compliance monitor for the warehouse floor.', 'Backend Development', 'NEGOTIATION', NULL, '2026-07-22 12:50:00+00'),
+            ('AIS-20260722-0003', 'Crescent Mall', 'Ursula Bianchi', '+14085551024', 'ursula.bianchi@crescentmall.example', 'Shopping Mall', '120-220 stores', 'Foot traffic analytics for holiday season planning.', 'Design Phase', 'NEW', NULL, '2026-07-22 15:15:00+00'),
+            ('AIS-20260722-0004', 'Oakmont College', 'Victor Huang', '+14085551025', 'victor.huang@oakmontcollege.example', 'College', '4000-7000 students', 'Admissions inquiry chatbot for transfer applicants.', 'Design Phase', 'QUALIFIED', NULL, '2026-07-22 18:40:00+00'),
+            ('AIS-20260730-0001', 'Brookfield School', 'Wanda Ellis', '+14085551026', 'wanda.ellis@brookfieldschool.example', 'School', '600-1200 students', 'Attendance anomaly detection for early intervention.', 'Design Phase', 'NEW', NULL, '2026-07-30 09:05:00+00'),
+            ('AIS-20260730-0002', 'Titan Steel Works', 'Xavier Nowak', '+14085551027', 'xavier.nowak@titansteel.example', 'Factory', '800-1200 employees', 'Quality inspection vision agent for the finishing line.', 'Backend Development', 'PROPOSAL_SENT', NULL, '2026-07-30 12:20:00+00'),
+            ('AIS-20260730-0003', 'Lakeshore Mall', 'Yolanda Reyes', '+14085551028', 'yolanda.reyes@lakeshoremall.example', 'Shopping Mall', '60-120 stores', 'Visitor assistance kiosk for the new food court wing.', 'Design Phase', 'CONTACTED', NULL, '2026-07-30 15:35:00+00'),
+            ('AIS-20260802-0001', 'Summit College', 'Zachary Cole', '+14085551029', 'zachary.cole@summitcollege.example', 'College', '3000-5000 students', 'Alumni engagement agent for the capital campaign.', 'Design Phase', 'NEW', NULL, '2026-08-02 09:50:00+00'),
+            ('AIS-20260802-0002', 'Parkview School District', 'Amara Chukwu', '+14085551030', 'amara.chukwu@parkviewschools.example', 'School', '2000-4000 students', 'Parent query router pilot for the fall semester.', 'Design Phase', 'NEW', NULL, '2026-08-02 13:15:00+00');
+    END IF;
+END $$;
+
+================================================================
+C:\ws\agent\website-ais\frontend\src\app\core\guards\auth.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../services/auth.service';
+
+/** Functional route guard (Angular 20 style) protecting admin-only routes. */
+export const authGuard: CanActivateFn = () => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated()) {
+    return true;
+  }
+
+  router.navigate(['/login']);
+  return false;
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\guards\role.guard.ts
+import { inject } from '@angular/core';
+import { CanActivateFn, Router } from '@angular/router';
+import { AuthService } from '../services/auth.service';
+
+/** Functional route guard restricting a route to ROLE_ADMIN only (e.g. user management). */
+export const adminOnlyGuard: CanActivateFn = () => {
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  if (authService.isAuthenticated() && authService.isAdmin()) {
+    return true;
+  }
+
+  router.navigate(['/admin/dashboard']);
+  return false;
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\interceptors\auth.interceptor.ts
+import { HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { AuthService } from '../services/auth.service';
+
+/** Functional interceptor (Angular 20 style) that attaches the JWT access token. */
+export const authInterceptor: HttpInterceptorFn = (req, next) => {
+  const authService = inject(AuthService);
+  const token = authService.getAccessToken();
+
+  if (token && req.url.includes('/api/v1/')) {
+    req = req.clone({
+      setHeaders: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  return next(req);
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\interceptors\error.interceptor.ts
+import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
+import { inject } from '@angular/core';
+import { Router } from '@angular/router';
+import { catchError, throwError } from 'rxjs';
+import { ApiErrorResponse } from '../models/api-response.model';
+import { AuthService } from '../services/auth.service';
+import { NotificationService } from '../services/notification.service';
+
+/**
+ * Functional interceptor (Angular 20 style) that unwraps the ApiErrorResponse envelope
+ * (see ais_website_instructions.md Section 4B) and surfaces a user-friendly message.
+ */
+export const errorInterceptor: HttpInterceptorFn = (req, next) => {
+  const notificationService = inject(NotificationService);
+  const authService = inject(AuthService);
+  const router = inject(Router);
+
+  return next(req).pipe(
+    catchError((error: HttpErrorResponse) => {
+      const apiError = error.error as ApiErrorResponse | undefined;
+      const message = apiError?.message ?? 'Something went wrong. Please try again.';
+      const details = apiError?.details?.length ? ` (${apiError.details.join(', ')})` : '';
+
+      if (error.status === 401) {
+        notificationService.show('Your session has expired. Please log in again.', 'error');
+        if (authService.isAuthenticated()) {
+          authService.logout();
+        } else {
+          router.navigate(['/login']);
+        }
+      } else {
+        notificationService.show(`${message}${details}`, 'error');
+      }
+
+      return throwError(() => error);
+    }),
+  );
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\interceptors\mock.interceptor.ts
+import { HttpErrorResponse, HttpEvent, HttpHandlerFn, HttpRequest, HttpResponse } from '@angular/common/http';
+import { Observable, delay, of, throwError } from 'rxjs';
+
+import {
+  mockCaseStudies,
+  mockCompanyInfo,
+  mockConsultationRequests,
+  mockContactMessages,
+  mockDashboardStats,
+  mockHome,
+  mockIdGenerators,
+  mockIndustries,
+  mockServices,
+  mockTestimonials,
+  mockUseCases,
+} from '../mocks/mock-data';
+
+// Dev-only interceptor: serves the exact same {success, data, message, timestamp} /
+// {success, errorCode, message, details, timestamp} envelopes as the real backend, so no
+// component code needs to change. Enabled only when environment.useMockData is true
+// (see environment.mock.ts + app.config.ts). Query strings are stripped before matching -
+// req.url includes them (e.g. "?page=0&size=10"), see angular.md memory note.
+function pathOf(req: HttpRequest<unknown>): string {
+  return new URL(req.url, 'http://mock.local').pathname.replace(/\/api\/v1/, '');
+}
+
+function paramsOf(req: HttpRequest<unknown>): URLSearchParams {
+  return new URL(req.url, 'http://mock.local').searchParams;
+}
+
+function ok(body: unknown, status = 200): Observable<HttpEvent<unknown>> {
+  return of(new HttpResponse({ status, body: { success: true, data: body, message: null, timestamp: new Date().toISOString() } })).pipe(delay(150));
+}
+
+function noContent(): Observable<HttpEvent<unknown>> {
+  return of(new HttpResponse({ status: 204 })).pipe(delay(150));
+}
+
+function fail(status: number, errorCode: string, message: string, details: string[] = []): Observable<HttpEvent<unknown>> {
+  // errorInterceptor's catchError() expects a real HttpErrorResponse (matches how
+  // HttpXhrBackend reports non-2xx responses), not an HttpResponse with an error status.
+  return throwError(
+    () =>
+      new HttpErrorResponse({
+        status,
+        error: { success: false, errorCode, message, details, timestamp: new Date().toISOString() },
+      })
+  );
+}
+
+function paged<T>(items: T[], req: HttpRequest<unknown>) {
+  const params = paramsOf(req);
+  const page = Number(params.get('page') ?? 0);
+  const size = Number(params.get('size') ?? 10);
+  const start = page * size;
+  return {
+    content: items.slice(start, start + size),
+    totalElements: items.length,
+    totalPages: Math.max(Math.ceil(items.length / size), 1),
+    page,
+    size,
+  };
+}
+
+function fakeToken(role: string, type: 'access' | 'refresh'): string {
+  return `mock-${type}-token-${role}-${Date.now()}`;
+}
+
+function loginResponse(username: string, role: string) {
+  return {
+    accessToken: fakeToken(role, 'access'),
+    refreshToken: fakeToken(role, 'refresh'),
+    username,
+    role,
+    expiresInMs: 3_600_000,
+  };
+}
+
+const DEMO_USERS: Record<string, { password: string; role: string }> = {
+  admin: { password: 'admin123', role: 'ADMIN' },
+  editor: { password: 'editor123', role: 'EDITOR' },
+};
+
+export function mockInterceptor(req: HttpRequest<unknown>, next: HttpHandlerFn): Observable<HttpEvent<unknown>> {
+  const path = pathOf(req);
+  const method = req.method;
+  const body = req.body as Record<string, any> | null;
+
+  // ---- Auth ----
+  if (method === 'POST' && path === '/auth/login') {
+    const user = DEMO_USERS[body?.['username']];
+    if (!user || user.password !== body?.['password']) {
+      return fail(401, 'INVALID_CREDENTIALS', 'Invalid username or password');
+    }
+    return ok(loginResponse(body!['username'], user.role));
+  }
+  if (method === 'POST' && path === '/auth/refresh') {
+    return ok(loginResponse('admin', 'ADMIN'));
+  }
+  if (method === 'POST' && path === '/auth/logout') {
+    return ok(null);
+  }
+
+  // ---- Content: public reads ----
+  if (method === 'GET' && path === '/content/home') return ok(mockHome);
+  if (method === 'GET' && path === '/content/about') return ok(mockCompanyInfo);
+  if (method === 'GET' && path === '/content/services') return ok(mockServices);
+  if (method === 'GET' && /^\/content\/services\/\d+$/.test(path)) {
+    const item = mockServices.find((s) => s.id === Number(path.split('/').pop()));
+    return item ? ok(item) : fail(404, 'RESOURCE_NOT_FOUND', 'Service not found');
+  }
+  if (method === 'GET' && path === '/content/industries') return ok(mockIndustries);
+  if (method === 'GET' && /^\/content\/industries\/\d+$/.test(path)) {
+    const item = mockIndustries.find((i) => i.id === Number(path.split('/').pop()));
+    return item ? ok(item) : fail(404, 'RESOURCE_NOT_FOUND', 'Industry not found');
+  }
+  if (method === 'GET' && path === '/content/use-cases') {
+    const industryId = paramsOf(req).get('industryId');
+    const items = industryId ? mockUseCases.filter((u) => u.industryId === Number(industryId)) : mockUseCases;
+    return ok(items);
+  }
+  if (method === 'GET' && /^\/content\/use-cases\/\d+$/.test(path)) {
+    const item = mockUseCases.find((u) => u.id === Number(path.split('/').pop()));
+    return item ? ok(item) : fail(404, 'RESOURCE_NOT_FOUND', 'Use case not found');
+  }
+  if (method === 'GET' && path === '/content/case-studies') return ok(mockCaseStudies);
+  if (method === 'GET' && /^\/content\/case-studies\/\d+$/.test(path)) {
+    const item = mockCaseStudies.find((c) => c.id === Number(path.split('/').pop()));
+    return item ? ok(item) : fail(404, 'RESOURCE_NOT_FOUND', 'Case study not found');
+  }
+  if (method === 'GET' && path === '/content/testimonials') return ok(mockTestimonials);
+
+  if (method === 'POST' && path === '/content/contact') {
+    const created = { id: mockIdGenerators.contact(), createdDate: new Date().toISOString(), ...body };
+    mockContactMessages.unshift(created as any);
+    return ok(created, 201);
+  }
+  if (method === 'GET' && path === '/content/contact') return ok(paged(mockContactMessages, req));
+
+  // ---- Content: admin CRUD ----
+  if (method === 'POST' && path === '/content/admin/services') {
+    const created = { id: mockIdGenerators.service(), status: 'ACTIVE', ...body };
+    mockServices.push(created as any);
+    return ok(created);
+  }
+  if (method === 'PUT' && /^\/content\/admin\/services\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockServices.findIndex((s) => s.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Service not found');
+    mockServices[idx] = { ...mockServices[idx], ...body, id };
+    return ok(mockServices[idx]);
+  }
+  if (method === 'DELETE' && /^\/content\/admin\/services\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockServices.findIndex((s) => s.id === id);
+    if (idx !== -1) mockServices.splice(idx, 1);
+    return noContent();
+  }
+
+  if (method === 'POST' && path === '/content/admin/industries') {
+    const created = { id: mockIdGenerators.industry(), ...body };
+    mockIndustries.push(created as any);
+    return ok(created);
+  }
+  if (method === 'PUT' && /^\/content\/admin\/industries\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockIndustries.findIndex((i) => i.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Industry not found');
+    mockIndustries[idx] = { ...mockIndustries[idx], ...body, id };
+    return ok(mockIndustries[idx]);
+  }
+  if (method === 'DELETE' && /^\/content\/admin\/industries\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockIndustries.findIndex((i) => i.id === id);
+    if (idx !== -1) mockIndustries.splice(idx, 1);
+    return noContent();
+  }
+
+  if (method === 'POST' && path === '/content/admin/use-cases') {
+    const created = { id: mockIdGenerators.useCase(), ...body };
+    mockUseCases.push(created as any);
+    return ok(created);
+  }
+  if (method === 'PUT' && /^\/content\/admin\/use-cases\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockUseCases.findIndex((u) => u.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Use case not found');
+    mockUseCases[idx] = { ...mockUseCases[idx], ...body, id };
+    return ok(mockUseCases[idx]);
+  }
+  if (method === 'DELETE' && /^\/content\/admin\/use-cases\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockUseCases.findIndex((u) => u.id === id);
+    if (idx !== -1) mockUseCases.splice(idx, 1);
+    return noContent();
+  }
+
+  if (method === 'POST' && path === '/content/admin/case-studies') {
+    const created = { id: mockIdGenerators.caseStudy(), ...body };
+    mockCaseStudies.push(created as any);
+    return ok(created);
+  }
+  if (method === 'PUT' && /^\/content\/admin\/case-studies\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockCaseStudies.findIndex((c) => c.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Case study not found');
+    mockCaseStudies[idx] = { ...mockCaseStudies[idx], ...body, id };
+    return ok(mockCaseStudies[idx]);
+  }
+  if (method === 'DELETE' && /^\/content\/admin\/case-studies\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockCaseStudies.findIndex((c) => c.id === id);
+    if (idx !== -1) mockCaseStudies.splice(idx, 1);
+    return noContent();
+  }
+
+  if (method === 'POST' && path === '/content/admin/testimonials') {
+    const created = { id: mockIdGenerators.testimonial(), ...body };
+    mockTestimonials.push(created as any);
+    return ok(created);
+  }
+  if (method === 'PUT' && /^\/content\/admin\/testimonials\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockTestimonials.findIndex((t) => t.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Testimonial not found');
+    mockTestimonials[idx] = { ...mockTestimonials[idx], ...body, id };
+    return ok(mockTestimonials[idx]);
+  }
+  if (method === 'DELETE' && /^\/content\/admin\/testimonials\/\d+$/.test(path)) {
+    const id = Number(path.split('/').pop());
+    const idx = mockTestimonials.findIndex((t) => t.id === id);
+    if (idx !== -1) mockTestimonials.splice(idx, 1);
+    return noContent();
+  }
+
+  // ---- Consultation ----
+  if (method === 'POST' && path === '/consultation/requests') {
+    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const created = {
+      id: mockIdGenerators.consultation(),
+      referenceNumber: `AIS-${today}-${String(mockConsultationRequests.length + 1).padStart(4, '0')}`,
+      status: 'NEW',
+      internalRemarks: null,
+      createdDate: new Date().toISOString(),
+      ...body,
+    };
+    mockConsultationRequests.unshift(created as any);
+    return ok(created, 201);
+  }
+  if (method === 'GET' && path === '/consultation/requests/export') {
+    const header = 'id,reference_number,organization_name,contact_person,mobile,email,industry,organization_size,requirements,preferred_engagement_step,status,internal_remarks,created_date';
+    const rows = mockConsultationRequests.map((r) =>
+      [r.id, r.referenceNumber, r.organizationName, r.contactPerson, r.mobile, r.email, r.industry, r.organizationSize ?? '', r.requirements ?? '', r.preferredEngagementStep ?? '', r.status, r.internalRemarks ?? '', r.createdDate].join(',')
+    );
+    const csv = [header, ...rows].join('\n');
+    return of(
+      new HttpResponse({
+        status: 200,
+        body: new Blob([csv], { type: 'text/csv' }),
+        headers: req.headers.set('Content-Disposition', 'attachment; filename=consultation-requests.csv'),
+      })
+    ).pipe(delay(150));
+  }
+  if (method === 'GET' && path === '/consultation/dashboard/stats') return ok(mockDashboardStats);
+  if (method === 'GET' && path === '/consultation/requests') {
+    const params = paramsOf(req);
+    const industry = params.get('industry');
+    const status = params.get('status');
+    let items = mockConsultationRequests;
+    if (industry) items = items.filter((r) => r.industry === industry);
+    if (status) items = items.filter((r) => r.status === status);
+    return ok(paged(items, req));
+  }
+  if (method === 'GET' && /^\/consultation\/requests\/\d+$/.test(path)) {
+    const item = mockConsultationRequests.find((r) => r.id === Number(path.split('/').pop()));
+    return item ? ok(item) : fail(404, 'RESOURCE_NOT_FOUND', 'Consultation request not found');
+  }
+  if (method === 'PATCH' && /^\/consultation\/requests\/\d+\/status$/.test(path)) {
+    const id = Number(path.split('/')[2]);
+    const idx = mockConsultationRequests.findIndex((r) => r.id === id);
+    if (idx === -1) return fail(404, 'RESOURCE_NOT_FOUND', 'Consultation request not found');
+    mockConsultationRequests[idx] = { ...mockConsultationRequests[idx], status: body?.['status'], internalRemarks: body?.['internalRemarks'] ?? mockConsultationRequests[idx].internalRemarks };
+    return ok(mockConsultationRequests[idx]);
+  }
+
+  // Anything else (e.g. unmocked routes) falls through to a real HTTP call.
+  return next(req);
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\mocks\mock-data.ts
+import { CaseStudy, CompanyInfo, ContactMessage, HomeContent, Industry, ServiceOffering, Testimonial, UseCase } from '../models/content.model';
+import { ConsultationResponse, DashboardStats } from '../models/consultation.model';
+
+// In-memory mock dataset used only when environment.useMockData is true (see
+// mock.interceptor.ts). Field names mirror the real API's camelCase DTOs exactly.
+
+export const mockCompanyInfo: CompanyInfo = {
+  id: 1,
+  name: 'AIS - Artificial Intelligent Solutions',
+  tagline: 'Custom AI Agents that increase ROI and reduce manual workload',
+  mission: 'Empower organizations with AI agents tailored to their operations.',
+  vision: 'A world where every organization has an AI teammate.',
+  founderBio: 'Solution architect specializing in applied AI for education, manufacturing, and retail.',
+  address: 'Remote-first',
+  phone: '+1-000-000-0000',
+  email: 'hello@ais.example',
+  linkedinUrl: 'https://linkedin.com/company/ais',
+};
+
+export const mockServices: ServiceOffering[] = [
+  { id: 1, stepNumber: 1, title: 'Design Phase', description: 'Discovery workshops and solution architecture.', deliverables: 'Architecture doc, roadmap', estimatedDuration: '2 weeks', status: 'ACTIVE' },
+  { id: 2, stepNumber: 2, title: 'Documentation Phase', description: 'Functional and technical specifications.', deliverables: 'FSD, TSD', estimatedDuration: '1 week', status: 'ACTIVE' },
+  { id: 3, stepNumber: 3, title: 'Backend Development', description: 'API and data platform build-out.', deliverables: 'Deployed backend services', estimatedDuration: '4 weeks', status: 'ACTIVE' },
+  { id: 4, stepNumber: 4, title: 'Frontend Development', description: 'User-facing application build-out.', deliverables: 'Deployed frontend application', estimatedDuration: '3 weeks', status: 'ACTIVE' },
+];
+
+export const mockIndustries: Industry[] = [
+  { id: 1, name: 'College', description: 'Higher education institutions.', painPoints: 'Manual admissions and student support.', howAiHelps: 'Automates admissions triage and helpdesk queries.' },
+  { id: 2, name: 'School', description: 'K-12 schools.', painPoints: 'Repetitive parent/student queries.', howAiHelps: 'Handles FAQs and routes escalations.' },
+  { id: 3, name: 'Factory', description: 'Manufacturing facilities.', painPoints: 'Manual quality/maintenance logging.', howAiHelps: 'Automates inspection logging and alerts.' },
+  { id: 4, name: 'Shopping Mall', description: 'Retail/shopping centers.', painPoints: 'High-volume visitor questions.', howAiHelps: 'Automates visitor assistance and directory lookups.' },
+];
+
+export const mockUseCases: UseCase[] = [
+  { id: 1, industryId: 1, industryName: 'College', name: 'Admission Agent', problemStatement: 'High admissions inquiry volume.', proposedSolution: 'Conversational AI triages applicants.', expectedRoi: '40% faster response time' },
+  { id: 2, industryId: 1, industryName: 'College', name: 'Student Helpdesk', problemStatement: 'Repetitive student queries.', proposedSolution: 'AI helpdesk agent.', expectedRoi: '30% fewer support tickets' },
+  { id: 3, industryId: 3, industryName: 'Factory', name: 'Quality Inspection Agent', problemStatement: 'Manual inspection logging.', proposedSolution: 'AI-assisted defect logging.', expectedRoi: '25% fewer missed defects' },
+  { id: 4, industryId: 4, industryName: 'Shopping Mall', name: 'Visitor Assistance Agent', problemStatement: 'High-volume visitor questions.', proposedSolution: 'Kiosk/chat AI directory assistant.', expectedRoi: '20% shorter wait times' },
+];
+
+export const mockCaseStudies: CaseStudy[] = [
+  { id: 1, industryId: 1, industryName: 'College', clientType: 'College', challenge: 'High admissions inquiry volume.', solution: 'Deployed an admissions AI agent.', techStack: 'FastAPI, Postgres', results: '40% faster response time.', publishedDate: '2026-01-15T00:00:00Z' },
+  { id: 2, industryId: 3, industryName: 'Factory', clientType: 'Factory', challenge: 'Manual inspection logging.', solution: 'Deployed a quality-inspection AI agent.', techStack: 'FastAPI, Postgres', results: '25% fewer missed defects.', publishedDate: '2026-02-10T00:00:00Z' },
+];
+
+export const mockTestimonials: Testimonial[] = [
+  { id: 1, clientName: 'Jane Doe', organization: 'Greenfield College', designation: 'Registrar', rating: 5, testimonialText: 'The admissions agent transformed our intake process.' },
+  { id: 2, clientName: 'John Smith', organization: 'Nexus Auto Components', designation: 'Plant Manager', rating: 4, testimonialText: 'Reduced our inspection backlog significantly.' },
+];
+
+export const mockHome: HomeContent = {
+  companyName: mockCompanyInfo.name,
+  tagline: mockCompanyInfo.tagline,
+  industries: mockIndustries,
+  services: mockServices,
+  featuredCaseStudies: mockCaseStudies,
+  featuredTestimonials: mockTestimonials,
+};
+
+export const mockContactMessages: ContactMessage[] = [
+  { id: 1, name: 'Alice Brown', email: 'alice@example.com', mobile: '+15551234567', subject: 'Pricing', message: 'Can you share pricing details?', createdDate: '2026-07-01T10:00:00Z' },
+  { id: 2, name: 'Bob White', email: 'bob@example.com', mobile: '+15559876543', subject: 'Demo request', message: "We'd like a live demo.", createdDate: '2026-07-15T14:30:00Z' },
+];
+
+export const mockConsultationRequests: ConsultationResponse[] = [
+  { id: 1, referenceNumber: 'AIS-20260710-0001', organizationName: 'Greenfield College', contactPerson: 'Jane Doe', mobile: '+15551112222', email: 'jane@greenfield.edu', industry: 'College', organizationSize: '500-1000', requirements: 'Admissions automation', preferredEngagementStep: 'Design Phase', status: 'WON', internalRemarks: 'Signed 6-month engagement', createdDate: '2026-07-10T09:00:00Z' },
+  { id: 2, referenceNumber: 'AIS-20260712-0001', organizationName: 'Sunrise Public School', contactPerson: 'Mark Lee', mobile: '+15553334444', email: 'mark@sunrise.edu', industry: 'School', organizationSize: '100-500', requirements: 'Parent FAQ bot', preferredEngagementStep: 'Documentation Phase', status: 'PROPOSAL_SENT', internalRemarks: 'Awaiting budget approval', createdDate: '2026-07-12T11:20:00Z' },
+  { id: 3, referenceNumber: 'AIS-20260715-0001', organizationName: 'Nexus Auto Components', contactPerson: 'Priya Singh', mobile: '+15555556666', email: 'priya@nexusauto.com', industry: 'Factory', organizationSize: '1000+', requirements: 'Quality inspection agent', preferredEngagementStep: 'Backend Development', status: 'NEGOTIATION', internalRemarks: 'Comparing with in-house build', createdDate: '2026-07-15T08:45:00Z' },
+];
+
+export const mockDashboardStats: DashboardStats = {
+  totalRequests: mockConsultationRequests.length,
+  newRequestsLast30Days: 2,
+  requestsByIndustry: { College: 1, School: 1, Factory: 1 },
+  requestsByStatus: { WON: 1, PROPOSAL_SENT: 1, NEGOTIATION: 1 },
+};
+
+let nextServiceId = mockServices.length + 1;
+let nextIndustryId = mockIndustries.length + 1;
+let nextUseCaseId = mockUseCases.length + 1;
+let nextCaseStudyId = mockCaseStudies.length + 1;
+let nextTestimonialId = mockTestimonials.length + 1;
+let nextContactId = mockContactMessages.length + 1;
+let nextConsultationId = mockConsultationRequests.length + 1;
+
+export const mockIdGenerators = {
+  service: () => nextServiceId++,
+  industry: () => nextIndustryId++,
+  useCase: () => nextUseCaseId++,
+  caseStudy: () => nextCaseStudyId++,
+  testimonial: () => nextTestimonialId++,
+  contact: () => nextContactId++,
+  consultation: () => nextConsultationId++,
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\api-response.model.ts
+export interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  message?: string;
+  timestamp?: string;
+}
+
+export interface ApiErrorResponse {
+  success: boolean;
+  errorCode: string;
+  message: string;
+  details: string[];
+  timestamp?: string;
+}
+
+export interface PageResponse<T> {
+  content: T[];
+  totalElements: number;
+  totalPages: number;
+  page: number;
+  size: number;
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\auth.model.ts
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  username: string;
+  role: string;
+  expiresInMs: number;
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\consultation.model.ts
+export type LeadStatus =
+  | 'NEW'
+  | 'CONTACTED'
+  | 'QUALIFIED'
+  | 'PROPOSAL_SENT'
+  | 'NEGOTIATION'
+  | 'WON'
+  | 'LOST';
+
+export interface ConsultationRequest {
+  organizationName: string;
+  contactPerson: string;
+  mobile: string;
+  email: string;
+  industry: string;
+  organizationSize?: string;
+  requirements?: string;
+  preferredEngagementStep?: string;
+}
+
+export interface ConsultationResponse {
+  id: number;
+  referenceNumber: string;
+  organizationName: string;
+  contactPerson: string;
+  mobile: string;
+  email: string;
+  industry: string;
+  organizationSize?: string;
+  requirements?: string;
+  preferredEngagementStep?: string;
+  status: LeadStatus;
+  internalRemarks?: string;
+  createdDate: string;
+}
+
+export interface UpdateStatusRequest {
+  status: LeadStatus;
+  internalRemarks?: string;
+}
+
+export interface DashboardStats {
+  totalRequests: number;
+  newRequestsLast30Days: number;
+  requestsByIndustry: Record<string, number>;
+  requestsByStatus: Record<string, number>;
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\models\content.model.ts
+export interface CompanyInfo {
+  id: number;
+  name: string;
+  tagline?: string;
+  mission?: string;
+  vision?: string;
+  founderBio?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  linkedinUrl?: string;
+}
+
+export interface ServiceOffering {
+  id: number;
+  stepNumber: number;
+  title: string;
+  description?: string;
+  deliverables?: string;
+  estimatedDuration?: string;
+  status?: string;
+}
+
+export interface Industry {
+  id: number;
+  name: string;
+  iconUrl?: string;
+  description?: string;
+  painPoints?: string;
+  howAiHelps?: string;
+}
+
+export interface UseCase {
+  id: number;
+  industryId: number;
+  industryName?: string;
+  name: string;
+  problemStatement?: string;
+  proposedSolution?: string;
+  expectedRoi?: string;
+}
+
+export interface CaseStudy {
+  id: number;
+  industryId?: number;
+  industryName?: string;
+  clientType?: string;
+  challenge?: string;
+  solution?: string;
+  techStack?: string;
+  results?: string;
+  publishedDate?: string;
+}
+
+export interface Testimonial {
+  id: number;
+  clientName: string;
+  organization?: string;
+  designation?: string;
+  testimonialText: string;
+  rating?: number;
+}
+
+export interface ContactMessage {
+  id?: number;
+  name: string;
+  email: string;
+  mobile?: string;
+  subject?: string;
+  message: string;
+  createdDate?: string;
+}
+
+export interface HomeContent {
+  companyName: string;
+  tagline?: string;
+  industries: Industry[];
+  services: ServiceOffering[];
+  featuredCaseStudies: CaseStudy[];
+  featuredTestimonials: Testimonial[];
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\admin-content.service.ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import { ServiceOffering, Industry, UseCase, CaseStudy, Testimonial } from '../models/content.model';
+
+/**
+ * Admin-only content management (create/update/delete). Mirrors
+ * AdminContentController on ais-content-service. Delete operations require ROLE_ADMIN
+ * server-side; the UI also hides delete actions for ROLE_EDITOR (see roleGuard usage).
+ */
+@Injectable({ providedIn: 'root' })
+export class AdminContentService {
+  private readonly baseUrl = `${environment.apiUrl}/content/admin`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  createServiceOffering(payload: Partial<ServiceOffering>): Observable<ServiceOffering> {
+    return this.http
+      .post<ApiResponse<ServiceOffering>>(`${this.baseUrl}/services`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  updateServiceOffering(id: number, payload: Partial<ServiceOffering>): Observable<ServiceOffering> {
+    return this.http
+      .put<ApiResponse<ServiceOffering>>(`${this.baseUrl}/services/${id}`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteServiceOffering(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/services/${id}`);
+  }
+
+  createIndustry(payload: Partial<Industry>): Observable<Industry> {
+    return this.http
+      .post<ApiResponse<Industry>>(`${this.baseUrl}/industries`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  updateIndustry(id: number, payload: Partial<Industry>): Observable<Industry> {
+    return this.http
+      .put<ApiResponse<Industry>>(`${this.baseUrl}/industries/${id}`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteIndustry(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/industries/${id}`);
+  }
+
+  createUseCase(payload: Partial<UseCase>): Observable<UseCase> {
+    return this.http
+      .post<ApiResponse<UseCase>>(`${this.baseUrl}/use-cases`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteUseCase(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/use-cases/${id}`);
+  }
+
+  createCaseStudy(payload: Partial<CaseStudy>): Observable<CaseStudy> {
+    return this.http
+      .post<ApiResponse<CaseStudy>>(`${this.baseUrl}/case-studies`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteCaseStudy(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/case-studies/${id}`);
+  }
+
+  createTestimonial(payload: Partial<Testimonial>): Observable<Testimonial> {
+    return this.http
+      .post<ApiResponse<Testimonial>>(`${this.baseUrl}/testimonials`, payload)
+      .pipe(map((r) => r.data));
+  }
+
+  deleteTestimonial(id: number): Observable<void> {
+    return this.http.delete<void>(`${this.baseUrl}/testimonials/${id}`);
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\auth.service.ts
+import { HttpClient } from '@angular/common/http';
+import { Injectable, computed, signal } from '@angular/core';
+import { Router } from '@angular/router';
+import { Observable, tap } from 'rxjs';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import { LoginRequest, LoginResponse } from '../models/auth.model';
+
+const ACCESS_TOKEN_KEY = 'ais_access_token';
+const REFRESH_TOKEN_KEY = 'ais_refresh_token';
+const USERNAME_KEY = 'ais_username';
+const ROLE_KEY = 'ais_role';
+
+/**
+ * Centralizes authentication state using Angular Signals (see
+ * ais_website_instructions.md Section 13A). Tokens are persisted to localStorage so a
+ * page refresh does not log the admin out.
+ */
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private readonly baseUrl = `${environment.apiUrl}/auth`;
+
+  private readonly usernameSignal = signal<string | null>(localStorage.getItem(USERNAME_KEY));
+  private readonly roleSignal = signal<string | null>(localStorage.getItem(ROLE_KEY));
+
+  readonly username = this.usernameSignal.asReadonly();
+  readonly role = this.roleSignal.asReadonly();
+  readonly isAuthenticated = computed(() => !!this.usernameSignal());
+  readonly isAdmin = computed(() => this.roleSignal() === 'ADMIN');
+
+  constructor(private readonly http: HttpClient, private readonly router: Router) {}
+
+  login(request: LoginRequest): Observable<ApiResponse<LoginResponse>> {
+    return this.http.post<ApiResponse<LoginResponse>>(`${this.baseUrl}/login`, request).pipe(
+      tap((response) => this.storeSession(response.data)),
+    );
+  }
+
+  logout(): void {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+    localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(ROLE_KEY);
+    this.usernameSignal.set(null);
+    this.roleSignal.set(null);
+    this.router.navigate(['/login']);
+  }
+
+  getAccessToken(): string | null {
+    return localStorage.getItem(ACCESS_TOKEN_KEY);
+  }
+
+  getRefreshToken(): string | null {
+    return localStorage.getItem(REFRESH_TOKEN_KEY);
+  }
+
+  refresh(): Observable<ApiResponse<LoginResponse>> {
+    return this.http
+      .post<ApiResponse<LoginResponse>>(`${this.baseUrl}/refresh`, {
+        refreshToken: this.getRefreshToken(),
+      })
+      .pipe(tap((response) => this.storeSession(response.data)));
+  }
+
+  private storeSession(data: LoginResponse): void {
+    localStorage.setItem(ACCESS_TOKEN_KEY, data.accessToken);
+    localStorage.setItem(REFRESH_TOKEN_KEY, data.refreshToken);
+    localStorage.setItem(USERNAME_KEY, data.username);
+    localStorage.setItem(ROLE_KEY, data.role);
+    this.usernameSignal.set(data.username);
+    this.roleSignal.set(data.role);
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\consultation.service.ts
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse, PageResponse } from '../models/api-response.model';
+import {
+  ConsultationRequest,
+  ConsultationResponse,
+  DashboardStats,
+  LeadStatus,
+  UpdateStatusRequest,
+} from '../models/consultation.model';
+
+@Injectable({ providedIn: 'root' })
+export class ConsultationService {
+  private readonly baseUrl = `${environment.apiUrl}/consultation`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  submit(request: ConsultationRequest): Observable<ConsultationResponse> {
+    return this.http
+      .post<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests`, request)
+      .pipe(map((r) => r.data));
+  }
+
+  list(
+    page = 0,
+    size = 10,
+    industry?: string,
+    status?: LeadStatus,
+  ): Observable<PageResponse<ConsultationResponse>> {
+    let params = new HttpParams().set('page', page).set('size', size);
+    if (industry) {
+      params = params.set('industry', industry);
+    }
+    if (status) {
+      params = params.set('status', status);
+    }
+    return this.http
+      .get<ApiResponse<PageResponse<ConsultationResponse>>>(`${this.baseUrl}/requests`, { params })
+      .pipe(map((r) => r.data));
+  }
+
+  getById(id: number): Observable<ConsultationResponse> {
+    return this.http
+      .get<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests/${id}`)
+      .pipe(map((r) => r.data));
+  }
+
+  updateStatus(id: number, request: UpdateStatusRequest): Observable<ConsultationResponse> {
+    return this.http
+      .patch<ApiResponse<ConsultationResponse>>(`${this.baseUrl}/requests/${id}/status`, request)
+      .pipe(map((r) => r.data));
+  }
+
+  exportCsv(): Observable<Blob> {
+    return this.http.get(`${this.baseUrl}/requests/export`, { responseType: 'blob' });
+  }
+
+  getDashboardStats(): Observable<DashboardStats> {
+    return this.http
+      .get<ApiResponse<DashboardStats>>(`${this.baseUrl}/dashboard/stats`)
+      .pipe(map((r) => r.data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\content.service.ts
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { environment } from '../../../environments/environment';
+import { ApiResponse } from '../models/api-response.model';
+import {
+  CaseStudy,
+  CompanyInfo,
+  ContactMessage,
+  HomeContent,
+  Industry,
+  ServiceOffering,
+  Testimonial,
+  UseCase,
+} from '../models/content.model';
+
+/** One service per resource, per ais_website_instructions.md Section 13A. */
+@Injectable({ providedIn: 'root' })
+export class ContentService {
+  private readonly baseUrl = `${environment.apiUrl}/content`;
+
+  constructor(private readonly http: HttpClient) {}
+
+  getHome(): Observable<HomeContent> {
+    return this.http
+      .get<ApiResponse<HomeContent>>(`${this.baseUrl}/home`)
+      .pipe(map((r) => r.data));
+  }
+
+  getAbout(): Observable<CompanyInfo> {
+    return this.http
+      .get<ApiResponse<CompanyInfo>>(`${this.baseUrl}/about`)
+      .pipe(map((r) => r.data));
+  }
+
+  listServices(): Observable<ServiceOffering[]> {
+    return this.http
+      .get<ApiResponse<ServiceOffering[]>>(`${this.baseUrl}/services`)
+      .pipe(map((r) => r.data));
+  }
+
+  listIndustries(): Observable<Industry[]> {
+    return this.http
+      .get<ApiResponse<Industry[]>>(`${this.baseUrl}/industries`)
+      .pipe(map((r) => r.data));
+  }
+
+  getIndustry(id: number): Observable<Industry> {
+    return this.http
+      .get<ApiResponse<Industry>>(`${this.baseUrl}/industries/${id}`)
+      .pipe(map((r) => r.data));
+  }
+
+  listUseCases(industryId?: number): Observable<UseCase[]> {
+    let params = new HttpParams();
+    if (industryId) {
+      params = params.set('industryId', industryId);
+    }
+    return this.http
+      .get<ApiResponse<UseCase[]>>(`${this.baseUrl}/use-cases`, { params })
+      .pipe(map((r) => r.data));
+  }
+
+  listCaseStudies(): Observable<CaseStudy[]> {
+    return this.http
+      .get<ApiResponse<CaseStudy[]>>(`${this.baseUrl}/case-studies`)
+      .pipe(map((r) => r.data));
+  }
+
+  listTestimonials(): Observable<Testimonial[]> {
+    return this.http
+      .get<ApiResponse<Testimonial[]>>(`${this.baseUrl}/testimonials`)
+      .pipe(map((r) => r.data));
+  }
+
+  submitContactMessage(message: ContactMessage): Observable<ContactMessage> {
+    return this.http
+      .post<ApiResponse<ContactMessage>>(`${this.baseUrl}/contact`, message)
+      .pipe(map((r) => r.data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\core\services\notification.service.ts
+import { Injectable, signal } from '@angular/core';
+
+export interface Toast {
+  id: number;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+/** Lightweight signal-based toast/notification store, used by the error interceptor. */
+@Injectable({ providedIn: 'root' })
+export class NotificationService {
+  private nextId = 1;
+  readonly toasts = signal<Toast[]>([]);
+
+  show(message: string, type: Toast['type'] = 'info'): void {
+    const toast: Toast = { id: this.nextId++, message, type };
+    this.toasts.update((list) => [...list, toast]);
+    setTimeout(() => this.dismiss(toast.id), 5000);
+  }
+
+  dismiss(id: number): void {
+    this.toasts.update((list) => list.filter((t) => t.id !== id));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\about\about.html
+@if (company(); as c) {
+  <section class="container py-5">
+    <h1 class="mb-4">About {{ c.name }}</h1>
+    <p class="lead">{{ c.tagline }}</p>
+
+    <div class="row g-4 mt-2">
+      <div class="col-md-6">
+        <h4>Our Mission</h4>
+        <p>{{ c.mission }}</p>
+      </div>
+      <div class="col-md-6">
+        <h4>Our Vision</h4>
+        <p>{{ c.vision }}</p>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <h4>Founder Profile</h4>
+      <p>{{ c.founderBio }}</p>
+    </div>
+
+    <div class="card border-0 shadow-sm mt-4">
+      <div class="card-body">
+        <h5 class="card-title">Get in Touch</h5>
+        <p class="mb-1">{{ c.address }}</p>
+        <p class="mb-1">{{ c.phone }}</p>
+        <p class="mb-1">{{ c.email }}</p>
+        @if (c.linkedinUrl) {
+          <a [href]="c.linkedinUrl" target="_blank" rel="noopener">LinkedIn Profile</a>
+        }
+      </div>
+    </div>
+  </section>
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\about\about.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { CompanyInfo } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-about',
+  standalone: true,
+  templateUrl: './about.html',
+})
+export class About implements OnInit {
+  readonly company = signal<CompanyInfo | null>(null);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.getAbout().subscribe((data) => this.company.set(data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\content-management\content-management.html
+<section class="container py-5">
+  <h1 class="mb-4">Content Management</h1>
+  <p class="text-muted">
+    Manage Service Offerings and Testimonials here. Industries, Use Cases, and Case Studies
+    follow the same create/delete pattern against the content service admin API.
+  </p>
+
+  <div class="row g-4">
+    <div class="col-md-6">
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Add Service Offering</h5>
+          <form [formGroup]="serviceForm" (ngSubmit)="createService()">
+            <div class="mb-2">
+              <label class="form-label">Step Number</label>
+              <input type="number" class="form-control" formControlName="stepNumber" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Title</label>
+              <input type="text" class="form-control" formControlName="title" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Description</label>
+              <textarea class="form-control" rows="2" formControlName="description"></textarea>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Deliverables</label>
+              <input type="text" class="form-control" formControlName="deliverables" />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Estimated Duration</label>
+              <input type="text" class="form-control" formControlName="estimatedDuration" />
+            </div>
+            <button type="submit" class="btn btn-dark w-100">Add Service</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Existing Services</h5>
+          <ul class="list-group list-group-flush">
+            @for (service of services(); track service.id) {
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>Step {{ service.stepNumber }} - {{ service.title }}</span>
+                <button type="button" class="btn btn-sm btn-outline-danger" (click)="deleteService(service.id)">
+                  Delete
+                </button>
+              </li>
+            }
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-6">
+      <div class="card border-0 shadow-sm mb-4">
+        <div class="card-body">
+          <h5 class="card-title">Add Testimonial</h5>
+          <form [formGroup]="testimonialForm" (ngSubmit)="createTestimonial()">
+            <div class="mb-2">
+              <label class="form-label">Client Name</label>
+              <input type="text" class="form-control" formControlName="clientName" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Organization</label>
+              <input type="text" class="form-control" formControlName="organization" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Designation</label>
+              <input type="text" class="form-control" formControlName="designation" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Testimonial</label>
+              <textarea class="form-control" rows="3" formControlName="testimonialText"></textarea>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Rating (1-5)</label>
+              <input type="number" class="form-control" formControlName="rating" min="1" max="5" />
+            </div>
+            <button type="submit" class="btn btn-dark w-100">Add Testimonial</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card border-0 shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title">Existing Testimonials</h5>
+          <ul class="list-group list-group-flush">
+            @for (t of testimonials(); track t.id) {
+              <li class="list-group-item d-flex justify-content-between align-items-center">
+                <span>{{ t.clientName }} ({{ t.organization }})</span>
+                <button type="button" class="btn btn-sm btn-outline-danger" (click)="deleteTestimonial(t.id)">
+                  Delete
+                </button>
+              </li>
+            }
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\content-management\content-management.ts
+import { Component, OnInit, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ContentService } from '../../../core/services/content.service';
+import { AdminContentService } from '../../../core/services/admin-content.service';
+import { NotificationService } from '../../../core/services/notification.service';
+import { ServiceOffering, Testimonial } from '../../../core/models/content.model';
+
+/**
+ * Simplified admin content management screen (time-boxed design decision, see
+ * TECHNICAL_SPEC.md): demonstrates the CRUD pattern for Service Offerings and
+ * Testimonials. Industries, Use Cases, and Case Studies follow the identical pattern
+ * against AdminContentService and can be added as additional tabs later.
+ */
+@Component({
+  selector: 'app-content-management',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './content-management.html',
+})
+export class ContentManagement implements OnInit {
+  private readonly fb = inject(FormBuilder);
+  private readonly contentService = inject(ContentService);
+  private readonly adminContentService = inject(AdminContentService);
+  private readonly notificationService = inject(NotificationService);
+
+  readonly services = signal<ServiceOffering[]>([]);
+  readonly testimonials = signal<Testimonial[]>([]);
+
+  readonly serviceForm = this.fb.group({
+    stepNumber: [1, [Validators.required]],
+    title: ['', [Validators.required]],
+    description: [''],
+    deliverables: [''],
+    estimatedDuration: [''],
+  });
+
+  readonly testimonialForm = this.fb.group({
+    clientName: ['', [Validators.required]],
+    organization: [''],
+    designation: [''],
+    testimonialText: ['', [Validators.required]],
+    rating: [5, [Validators.required, Validators.min(1), Validators.max(5)]],
+  });
+
+  ngOnInit(): void {
+    this.loadServices();
+    this.loadTestimonials();
+  }
+
+  loadServices(): void {
+    this.contentService.listServices().subscribe((data) => this.services.set(data));
+  }
+
+  loadTestimonials(): void {
+    this.contentService.listTestimonials().subscribe((data) => this.testimonials.set(data));
+  }
+
+  createService(): void {
+    if (this.serviceForm.invalid) {
+      this.serviceForm.markAllAsTouched();
+      return;
+    }
+    this.adminContentService.createServiceOffering(this.serviceForm.getRawValue() as Partial<ServiceOffering>).subscribe(() => {
+      this.notificationService.show('Service offering created', 'success');
+      this.serviceForm.reset({ stepNumber: 1 });
+      this.loadServices();
+    });
+  }
+
+  deleteService(id: number): void {
+    this.adminContentService.deleteServiceOffering(id).subscribe(() => {
+      this.notificationService.show('Service offering deleted', 'success');
+      this.loadServices();
+    });
+  }
+
+  createTestimonial(): void {
+    if (this.testimonialForm.invalid) {
+      this.testimonialForm.markAllAsTouched();
+      return;
+    }
+    this.adminContentService.createTestimonial(this.testimonialForm.getRawValue() as Partial<Testimonial>).subscribe(() => {
+      this.notificationService.show('Testimonial created', 'success');
+      this.testimonialForm.reset({ rating: 5 });
+      this.loadTestimonials();
+    });
+  }
+
+  deleteTestimonial(id: number): void {
+    this.adminContentService.deleteTestimonial(id).subscribe(() => {
+      this.notificationService.show('Testimonial deleted', 'success');
+      this.loadTestimonials();
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\dashboard\dashboard.html
+<section class="container py-5">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h1>Admin Dashboard</h1>
+    <div class="d-flex gap-2">
+      <a routerLink="/admin/leads" class="btn btn-outline-dark">Manage Leads</a>
+      <a routerLink="/admin/content" class="btn btn-outline-dark">Manage Content</a>
+    </div>
+  </div>
+
+  @if (stats(); as s) {
+    <div class="row g-4 mb-5">
+      <div class="col-md-4">
+        <div class="card border-0 shadow-sm text-center">
+          <div class="card-body">
+            <h2 class="mb-0">{{ s.totalRequests }}</h2>
+            <p class="text-muted mb-0">Total Consultation Requests</p>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="card border-0 shadow-sm text-center">
+          <div class="card-body">
+            <h2 class="mb-0">{{ s.newRequestsLast30Days }}</h2>
+            <p class="text-muted mb-0">New Requests (Last 30 Days)</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+          <div class="card-body">
+            <h5 class="card-title">Requests by Industry</h5>
+            <ul class="list-group list-group-flush">
+              @for (entry of objectEntries(s.requestsByIndustry); track entry[0]) {
+                <li class="list-group-item d-flex justify-content-between">
+                  <span>{{ entry[0] }}</span>
+                  <span class="fw-semibold">{{ entry[1] }}</span>
+                </li>
+              }
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-md-6">
+        <div class="card border-0 shadow-sm">
+          <div class="card-body">
+            <h5 class="card-title">Requests by Status</h5>
+            <ul class="list-group list-group-flush">
+              @for (entry of objectEntries(s.requestsByStatus); track entry[0]) {
+                <li class="list-group-item d-flex justify-content-between">
+                  <span>{{ entry[0] }}</span>
+                  <span class="fw-semibold">{{ entry[1] }}</span>
+                </li>
+              }
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\dashboard\dashboard.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ConsultationService } from '../../../core/services/consultation.service';
+import { DashboardStats } from '../../../core/models/consultation.model';
+
+@Component({
+  selector: 'app-dashboard',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './dashboard.html',
+})
+export class Dashboard implements OnInit {
+  readonly stats = signal<DashboardStats | null>(null);
+
+  constructor(private readonly consultationService: ConsultationService) {}
+
+  ngOnInit(): void {
+    this.consultationService.getDashboardStats().subscribe((data) => this.stats.set(data));
+  }
+
+  objectEntries(obj: Record<string, number> | undefined): [string, number][] {
+    return obj ? Object.entries(obj) : [];
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\leads-management\leads-management.html
+<section class="container py-5">
+  <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+    <h1>Consultation Requests</h1>
+    <div class="d-flex gap-2 align-items-center">
+      <select class="form-select" [(ngModel)]="statusFilter" (ngModelChange)="onFilterChange()">
+        <option value="">All Statuses</option>
+        @for (status of statuses; track status) {
+          <option [value]="status">{{ status }}</option>
+        }
+      </select>
+      <button type="button" class="btn btn-outline-dark" (click)="exportCsv()">Export CSV</button>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Reference #</th>
+          <th>Organization</th>
+          <th>Contact</th>
+          <th>Industry</th>
+          <th>Status</th>
+          <th>Received</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (lead of leads(); track lead.id) {
+          <tr>
+            <td>{{ lead.referenceNumber }}</td>
+            <td>{{ lead.organizationName }}</td>
+            <td>{{ lead.contactPerson }}<br /><small class="text-muted">{{ lead.email }}</small></td>
+            <td>{{ lead.industry }}</td>
+            <td>
+              <select
+                class="form-select form-select-sm"
+                [ngModel]="lead.status"
+                (ngModelChange)="updateStatus(lead, $event)"
+              >
+                @for (status of statuses; track status) {
+                  <option [value]="status">{{ status }}</option>
+                }
+              </select>
+            </td>
+            <td>{{ lead.createdDate | date: 'medium' }}</td>
+          </tr>
+        } @empty {
+          <tr>
+            <td colspan="6" class="text-center text-muted py-4">No consultation requests found.</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mt-3">
+    <span class="text-muted small">Total: {{ totalElements() }}</span>
+    <div class="btn-group">
+      <button type="button" class="btn btn-outline-secondary" (click)="previousPage()">Previous</button>
+      <button type="button" class="btn btn-outline-secondary" (click)="nextPage()">Next</button>
+    </div>
+  </div>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\admin\leads-management\leads-management.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+import { ConsultationService } from '../../../core/services/consultation.service';
+import { ConsultationResponse, LeadStatus } from '../../../core/models/consultation.model';
+
+@Component({
+  selector: 'app-leads-management',
+  standalone: true,
+  imports: [FormsModule, DatePipe],
+  templateUrl: './leads-management.html',
+})
+export class LeadsManagement implements OnInit {
+  readonly leads = signal<ConsultationResponse[]>([]);
+  readonly totalElements = signal(0);
+  readonly page = signal(0);
+  readonly pageSize = 10;
+  readonly statusFilter = signal<LeadStatus | ''>('');
+
+  readonly statuses: LeadStatus[] = [
+    'NEW',
+    'CONTACTED',
+    'QUALIFIED',
+    'PROPOSAL_SENT',
+    'NEGOTIATION',
+    'WON',
+    'LOST',
+  ];
+
+  constructor(private readonly consultationService: ConsultationService) {}
+
+  ngOnInit(): void {
+    this.load();
+  }
+
+  load(): void {
+    this.consultationService
+      .list(this.page(), this.pageSize, undefined, this.statusFilter() || undefined)
+      .subscribe((data) => {
+        this.leads.set(data.content);
+        this.totalElements.set(data.totalElements);
+      });
+  }
+
+  onFilterChange(): void {
+    this.page.set(0);
+    this.load();
+  }
+
+  updateStatus(lead: ConsultationResponse, newStatus: LeadStatus): void {
+    this.consultationService.updateStatus(lead.id, { status: newStatus }).subscribe(() => {
+      this.load();
+    });
+  }
+
+  nextPage(): void {
+    if ((this.page() + 1) * this.pageSize < this.totalElements()) {
+      this.page.update((p) => p + 1);
+      this.load();
+    }
+  }
+
+  previousPage(): void {
+    if (this.page() > 0) {
+      this.page.update((p) => p - 1);
+      this.load();
+    }
+  }
+
+  exportCsv(): void {
+    this.consultationService.exportCsv().subscribe((blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'consultation-requests.csv';
+      link.click();
+      window.URL.revokeObjectURL(url);
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\case-studies\case-studies.html
+<section class="container py-5">
+  <h1 class="text-center mb-5">Case Studies</h1>
+
+  <div class="row g-4">
+    @for (cs of caseStudies(); track cs.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <span class="badge bg-secondary mb-2">{{ cs.industryName }}</span>
+            <h5 class="card-title">{{ cs.clientType }}</h5>
+            <p class="card-text small"><strong>Challenge:</strong> {{ cs.challenge }}</p>
+            <p class="card-text small"><strong>Solution:</strong> {{ cs.solution }}</p>
+            <p class="card-text small text-muted"><strong>Tech Stack:</strong> {{ cs.techStack }}</p>
+            <p class="card-text small text-success"><strong>Results:</strong> {{ cs.results }}</p>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\case-studies\case-studies.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { CaseStudy } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-case-studies',
+  standalone: true,
+  templateUrl: './case-studies.html',
+})
+export class CaseStudies implements OnInit {
+  readonly caseStudies = signal<CaseStudy[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listCaseStudies().subscribe((data) => this.caseStudies.set(data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\consultation\consultation.html
+<section class="container py-5" style="max-width: 700px">
+  <h1 class="text-center mb-2">Request a Consultation</h1>
+  <p class="text-center text-muted mb-4">
+    Tell us about your organization and we'll get back to you with a tailored AI agent proposal.
+  </p>
+
+  @if (referenceNumber(); as ref) {
+    <div class="alert alert-success">
+      Thank you! Your consultation request has been submitted. Your reference number is
+      <strong>{{ ref }}</strong>. We will reach out to you shortly.
+    </div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Organization Name *</label>
+      <input type="text" class="form-control" formControlName="organizationName" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Contact Person *</label>
+      <input type="text" class="form-control" formControlName="contactPerson" />
+    </div>
+
+    <div class="row">
+      <div class="col-md-6 mb-3">
+        <label class="form-label">Mobile *</label>
+        <input type="text" class="form-control" formControlName="mobile" placeholder="+919876543210" />
+        @if (form.controls.mobile.invalid && form.controls.mobile.touched) {
+          <div class="text-danger small">Enter a valid mobile number.</div>
+        }
+      </div>
+      <div class="col-md-6 mb-3">
+        <label class="form-label">Email *</label>
+        <input type="email" class="form-control" formControlName="email" />
+      </div>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Industry *</label>
+      <select class="form-select" formControlName="industry">
+        <option value="" disabled selected>Select an industry</option>
+        @for (industry of industries; track industry) {
+          <option [value]="industry">{{ industry }}</option>
+        }
+      </select>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Organization Size</label>
+      <input type="text" class="form-control" formControlName="organizationSize" placeholder="e.g. 500-1000 students" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Current Challenges / Requirements</label>
+      <textarea class="form-control" rows="4" formControlName="requirements"></textarea>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Preferred Engagement Step</label>
+      <select class="form-select" formControlName="preferredEngagementStep">
+        <option value="" disabled selected>Select an option</option>
+        @for (step of engagementSteps; track step) {
+          <option [value]="step">{{ step }}</option>
+        }
+      </select>
+    </div>
+
+    <button type="submit" class="btn btn-info w-100 text-dark fw-semibold" [disabled]="submitting()">
+      @if (submitting()) { Submitting... } @else { Submit Request }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\consultation\consultation.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ConsultationService } from '../../core/services/consultation.service';
+
+@Component({
+  selector: 'app-consultation',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './consultation.html',
+})
+export class Consultation {
+  private readonly fb = inject(FormBuilder);
+  private readonly consultationService = inject(ConsultationService);
+
+  readonly submitting = signal(false);
+  readonly referenceNumber = signal<string | null>(null);
+
+  readonly industries = ['College', 'School', 'Factory', 'Shopping Mall', 'Other'];
+  readonly engagementSteps = ['Design Only', 'Full End-to-End', 'Custom'];
+
+  readonly form = this.fb.group({
+    organizationName: ['', [Validators.required]],
+    contactPerson: ['', [Validators.required]],
+    mobile: ['', [Validators.required, Validators.pattern(/^\+?[0-9]{7,15}$/)]],
+    email: ['', [Validators.required, Validators.email]],
+    industry: ['', [Validators.required]],
+    organizationSize: [''],
+    requirements: [''],
+    preferredEngagementStep: [''],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.consultationService.submit(this.form.getRawValue() as any).subscribe({
+      next: (response) => {
+        this.submitting.set(false);
+        this.referenceNumber.set(response.referenceNumber);
+        this.form.reset();
+      },
+      error: () => this.submitting.set(false),
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\contact\contact.html
+<section class="container py-5" style="max-width: 700px">
+  <h1 class="text-center mb-4">Contact Us</h1>
+
+  @if (submitted()) {
+    <div class="alert alert-success">Thank you! Your message has been sent successfully.</div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Name *</label>
+      <input type="text" class="form-control" formControlName="name" />
+      @if (form.controls.name.invalid && form.controls.name.touched) {
+        <div class="text-danger small">Name is required.</div>
+      }
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Email *</label>
+      <input type="email" class="form-control" formControlName="email" />
+      @if (form.controls.email.invalid && form.controls.email.touched) {
+        <div class="text-danger small">A valid email is required.</div>
+      }
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Mobile</label>
+      <input type="text" class="form-control" formControlName="mobile" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Subject</label>
+      <input type="text" class="form-control" formControlName="subject" />
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Message *</label>
+      <textarea class="form-control" rows="4" formControlName="message"></textarea>
+      @if (form.controls.message.invalid && form.controls.message.touched) {
+        <div class="text-danger small">Message is required.</div>
+      }
+    </div>
+
+    <button type="submit" class="btn btn-dark w-100" [disabled]="submitting()">
+      @if (submitting()) { Sending... } @else { Send Message }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\contact\contact.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { ContentService } from '../../core/services/content.service';
+import { NotificationService } from '../../core/services/notification.service';
+
+@Component({
+  selector: 'app-contact',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './contact.html',
+})
+export class Contact {
+  private readonly fb = inject(FormBuilder);
+  private readonly contentService = inject(ContentService);
+  private readonly notificationService = inject(NotificationService);
+
+  readonly submitted = signal(false);
+  readonly submitting = signal(false);
+
+  readonly form = this.fb.group({
+    name: ['', [Validators.required]],
+    email: ['', [Validators.required, Validators.email]],
+    mobile: [''],
+    subject: [''],
+    message: ['', [Validators.required]],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.contentService.submitContactMessage(this.form.getRawValue() as any).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.submitted.set(true);
+        this.notificationService.show('Message sent successfully. We will get back to you soon.', 'success');
+        this.form.reset();
+      },
+      error: () => this.submitting.set(false),
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.html
+<section class="hero bg-dark text-light py-5">
+  <div class="container py-5 text-center">
+    <h1 class="display-4 fw-bold mb-3">AI Agents for Smarter Organizations</h1>
+    <p class="lead col-lg-8 mx-auto">
+      AIS helps colleges, schools, factories, and shopping malls increase ROI, speed up
+      operations, and reduce dependency on manual workforce through custom-built AI agents.
+    </p>
+    <a routerLink="/consultation" class="btn btn-info btn-lg text-dark fw-semibold mt-3">Request a Free Consultation</a>
+  </div>
+</section>
+
+@if (loading()) {
+  <div class="container py-5 text-center">
+    <div class="spinner-border text-primary" role="status"></div>
+  </div>
+} @else if (content(); as home) {
+  <section class="container py-5">
+    <h2 class="text-center mb-4">Industries We Serve</h2>
+    <div class="row g-4">
+      @for (industry of home.industries; track industry.id) {
+        <div class="col-md-3 col-sm-6">
+          <a [routerLink]="['/industries', industry.id]" class="text-decoration-none">
+            <div class="card h-100 shadow-sm text-center border-0">
+              <div class="card-body">
+                <h5 class="card-title">{{ industry.name }}</h5>
+                <p class="card-text text-muted small">{{ industry.description }}</p>
+              </div>
+            </div>
+          </a>
+        </div>
+      }
+    </div>
+  </section>
+
+  <section class="bg-light py-5">
+    <div class="container">
+      <h2 class="text-center mb-4">Our Engagement Process</h2>
+      <div class="row g-4">
+        @for (service of home.services; track service.id) {
+          <div class="col-md-3 col-sm-6">
+            <div class="card h-100 border-0 shadow-sm">
+              <div class="card-body">
+                <span class="badge bg-info text-dark mb-2">Step {{ service.stepNumber }}</span>
+                <h5 class="card-title">{{ service.title }}</h5>
+                <p class="card-text small text-muted">{{ service.description }}</p>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+      <div class="text-center mt-4">
+        <a routerLink="/services" class="btn btn-outline-dark">See Full Service Details</a>
+      </div>
+    </div>
+  </section>
+
+  @if (home.featuredCaseStudies.length > 0) {
+    <section class="container py-5">
+      <h2 class="text-center mb-4">Featured Case Studies</h2>
+      <div class="row g-4">
+        @for (cs of home.featuredCaseStudies; track cs.id) {
+          <div class="col-md-4">
+            <div class="card h-100 shadow-sm border-0">
+              <div class="card-body">
+                <h6 class="text-info">{{ cs.clientType }}</h6>
+                <p class="card-text small">{{ cs.challenge }}</p>
+                <p class="card-text small text-muted"><strong>Result:</strong> {{ cs.results }}</p>
+              </div>
+            </div>
+          </div>
+        }
+      </div>
+      <div class="text-center mt-4">
+        <a routerLink="/case-studies" class="btn btn-outline-dark">View All Case Studies</a>
+      </div>
+    </section>
+  }
+
+  @if (home.featuredTestimonials.length > 0) {
+    <section class="bg-light py-5">
+      <div class="container">
+        <h2 class="text-center mb-4">What Our Clients Say</h2>
+        <div class="row g-4">
+          @for (t of home.featuredTestimonials; track t.id) {
+            <div class="col-md-4">
+              <div class="card h-100 border-0 shadow-sm">
+                <div class="card-body">
+                  <p class="card-text fst-italic">&ldquo;{{ t.testimonialText }}&rdquo;</p>
+                  <p class="card-text mb-0 fw-semibold">{{ t.clientName }}</p>
+                  <p class="card-text small text-muted">{{ t.designation }}, {{ t.organization }}</p>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      </div>
+    </section>
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.scss
+.hero {
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\home\home.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ContentService } from '../../core/services/content.service';
+import { HomeContent } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-home',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './home.html',
+  styleUrl: './home.scss',
+})
+export class Home implements OnInit {
+  readonly content = signal<HomeContent | null>(null);
+  readonly loading = signal(true);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.getHome().subscribe({
+      next: (data) => {
+        this.content.set(data);
+        this.loading.set(false);
+      },
+      error: () => this.loading.set(false),
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industry-detail\industry-detail.html
+@if (industry(); as ind) {
+  <section class="container py-5">
+    <a routerLink="/industries" class="btn btn-link ps-0">&larr; Back to Industries</a>
+    <h1>{{ ind.name }}</h1>
+    <p class="lead">{{ ind.description }}</p>
+    <p><strong>Common Pain Points:</strong> {{ ind.painPoints }}</p>
+    <p><strong>How AI Agents Help:</strong> {{ ind.howAiHelps }}</p>
+
+    <h3 class="mt-5 mb-3">AI Agent Use Cases for {{ ind.name }}</h3>
+    <div class="row g-4">
+      @for (uc of useCases(); track uc.id) {
+        <div class="col-md-6">
+          <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body">
+              <h5 class="card-title">{{ uc.name }}</h5>
+              <p class="card-text small"><strong>Problem:</strong> {{ uc.problemStatement }}</p>
+              <p class="card-text small"><strong>Solution:</strong> {{ uc.proposedSolution }}</p>
+              <p class="card-text small text-success"><strong>Expected ROI:</strong> {{ uc.expectedRoi }}</p>
+            </div>
+          </div>
+        </div>
+      } @empty {
+        <p class="text-muted">No use cases published yet for this industry.</p>
+      }
+    </div>
+  </section>
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industry-detail\industry-detail.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ContentService } from '../../../core/services/content.service';
+import { Industry, UseCase } from '../../../core/models/content.model';
+
+@Component({
+  selector: 'app-industry-detail',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './industry-detail.html',
+})
+export class IndustryDetail implements OnInit {
+  readonly industry = signal<Industry | null>(null);
+  readonly useCases = signal<UseCase[]>([]);
+
+  constructor(
+    private readonly route: ActivatedRoute,
+    private readonly contentService: ContentService,
+  ) {}
+
+  ngOnInit(): void {
+    const id = Number(this.route.snapshot.paramMap.get('id'));
+    this.contentService.getIndustry(id).subscribe((data) => this.industry.set(data));
+    this.contentService.listUseCases(id).subscribe((data) => this.useCases.set(data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industries.html
+<section class="container py-5">
+  <h1 class="text-center mb-2">Industries We Serve</h1>
+  <p class="text-center text-muted mb-5">
+    We tailor AI agents to the unique challenges of each industry we work with.
+  </p>
+
+  <div class="row g-4">
+    @for (industry of industries(); track industry.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <h4 class="card-title">{{ industry.name }}</h4>
+            <p class="card-text">{{ industry.description }}</p>
+            <p class="card-text small text-muted"><strong>Pain Points:</strong> {{ industry.painPoints }}</p>
+            <p class="card-text small text-muted"><strong>How AI Helps:</strong> {{ industry.howAiHelps }}</p>
+            <a [routerLink]="['/industries', industry.id]" class="btn btn-sm btn-outline-dark mt-2">
+              View AI Agent Use Cases
+            </a>
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\industries\industries.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
+import { ContentService } from '../../core/services/content.service';
+import { Industry } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-industries',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './industries.html',
+})
+export class Industries implements OnInit {
+  readonly industries = signal<Industry[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listIndustries().subscribe((data) => this.industries.set(data));
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\login\login.html
+<section class="container py-5" style="max-width: 420px">
+  <h1 class="text-center mb-4">Admin Login</h1>
+
+  @if (errorMessage(); as err) {
+    <div class="alert alert-danger">{{ err }}</div>
+  }
+
+  <form [formGroup]="form" (ngSubmit)="submit()">
+    <div class="mb-3">
+      <label class="form-label">Username</label>
+      <input type="text" class="form-control" formControlName="username" autocomplete="username" />
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Password</label>
+      <input type="password" class="form-control" formControlName="password" autocomplete="current-password" />
+    </div>
+    <button type="submit" class="btn btn-dark w-100" [disabled]="submitting()">
+      @if (submitting()) { Logging in... } @else { Login }
+    </button>
+  </form>
+</section>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\login\login.ts
+import { Component, inject, signal } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { Router } from '@angular/router';
+import { AuthService } from '../../core/services/auth.service';
+
+@Component({
+  selector: 'app-login',
+  standalone: true,
+  imports: [ReactiveFormsModule],
+  templateUrl: './login.html',
+})
+export class Login {
+  private readonly fb = inject(FormBuilder);
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly submitting = signal(false);
+  readonly errorMessage = signal<string | null>(null);
+
+  readonly form = this.fb.group({
+    username: ['', [Validators.required]],
+    password: ['', [Validators.required]],
+  });
+
+  submit(): void {
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      return;
+    }
+
+    this.submitting.set(true);
+    this.errorMessage.set(null);
+    this.authService.login(this.form.getRawValue() as any).subscribe({
+      next: () => {
+        this.submitting.set(false);
+        this.router.navigate(['/admin/dashboard']);
+      },
+      error: () => {
+        this.submitting.set(false);
+        this.errorMessage.set('Invalid username or password.');
+      },
+    });
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\services\services.html
+<section class="container py-5">
+  <h1 class="text-center mb-2">Our Services</h1>
+  <p class="text-center text-muted mb-5">
+    Every AIS engagement follows the same proven 4-step process, from architecture design
+    through a fully working, tested, deployed solution.
+  </p>
+
+  <div class="row g-4">
+    @for (service of services(); track service.id) {
+      <div class="col-md-6">
+        <div class="card h-100 border-0 shadow-sm">
+          <div class="card-body">
+            <span class="badge bg-info text-dark mb-2">Step {{ service.stepNumber }}</span>
+            <h4 class="card-title">{{ service.title }}</h4>
+            <p class="card-text">{{ service.description }}</p>
+            @if (service.deliverables) {
+              <p class="card-text"><strong>Deliverables:</strong> {{ service.deliverables }}</p>
+            }
+            @if (service.estimatedDuration) {
+              <p class="card-text text-muted small"><strong>Estimated Duration:</strong> {{ service.estimatedDuration }}</p>
+            }
+          </div>
+        </div>
+      </div>
+    }
+  </div>
+</section>
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\features\services\services.ts
+import { Component, OnInit, signal } from '@angular/core';
+import { ContentService } from '../../core/services/content.service';
+import { ServiceOffering } from '../../core/models/content.model';
+
+@Component({
+  selector: 'app-services',
+  standalone: true,
+  templateUrl: './services.html',
+})
+export class Services implements OnInit {
+  readonly services = signal<ServiceOffering[]>([]);
+
+  constructor(private readonly contentService: ContentService) {}
+
+  ngOnInit(): void {
+    this.contentService.listServices().subscribe((data) => this.services.set(data));
+  }
+}
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.html
+
+<div class="toast-stack position-fixed top-0 end-0 p-3" style="z-index: 1080">
+  @for (toast of notificationService.toasts(); track toast.id) {
+    <div
+      class="toast show align-items-center border-0 mb-2"
+      [class.text-bg-danger]="toast.type === 'error'"
+      [class.text-bg-success]="toast.type === 'success'"
+      [class.text-bg-info]="toast.type === 'info'"
+    >
+      <div class="d-flex">
+        <div class="toast-body">{{ toast.message }}</div>
+        <button
+          type="button"
+          class="btn-close btn-close-white me-2 m-auto"
+          (click)="notificationService.dismiss(toast.id)"
+          aria-label="Close"
+        ></button>
+      </div>
+    </div>
+  }
+</div>
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.scss
+.toast-stack {
+  max-width: 350px;
+}
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\components\toast-container\toast-container.ts
+import { Component } from '@angular/core';
+import { NotificationService } from '../../../core/services/notification.service';
+
+@Component({
+  selector: 'app-toast-container',
+  standalone: true,
+  templateUrl: './toast-container.html',
+  styleUrl: './toast-container.scss',
+})
+export class ToastContainer {
+  constructor(readonly notificationService: NotificationService) {}
+}
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.html
+<footer class="bg-dark text-light py-5 mt-auto">
+  <div class="container">
+    <div class="row g-4">
+      <div class="col-md-4">
+        <h5>AIS - Artificial Intelligent Solutions</h5>
+        <p class="text-secondary">
+          Building smart, AI-enabled organizations. We design and build custom AI agents
+          for colleges, schools, factories, and shopping malls.
+        </p>
+      </div>
+      <div class="col-md-4">
+        <h6>Quick Links</h6>
+        <ul class="list-unstyled">
+          <li><a routerLink="/services" class="footer-link">Services</a></li>
+          <li><a routerLink="/industries" class="footer-link">Industries We Serve</a></li>
+          <li><a routerLink="/case-studies" class="footer-link">Case Studies</a></li>
+          <li><a routerLink="/consultation" class="footer-link">Request a Consultation</a></li>
+        </ul>
+      </div>
+      <div class="col-md-4">
+        <h6>Contact</h6>
+        <ul class="list-unstyled text-secondary">
+          <li>Bengaluru, India</li>
+          <li>contact&#64;ais-solutions.example.com</li>
+          <li>+91-98765-00000</li>
+        </ul>
+      </div>
+    </div>
+    <hr class="border-secondary" />
+    <p class="text-secondary text-center mb-0 small">&copy; {{ year }} AIS - Artificial Intelligent Solutions. All rights reserved.</p>
+  </div>
+</footer>
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.scss
+.footer-link {
+  color: #adb5bd;
+  text-decoration: none;
+
+  &:hover {
+    color: #fff;
+    text-decoration: underline;
+  }
+}
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\footer\footer.ts
+
+import { Component } from '@angular/core';
+import { RouterLink } from '@angular/router';
+
+@Component({
+  selector: 'app-footer',
+  standalone: true,
+  imports: [RouterLink],
+  templateUrl: './footer.html',
+  styleUrl: './footer.scss',
+})
+export class Footer {
+  readonly year = new Date().getFullYear();
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.html
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark sticky-top">
+  <div class="container">
+    <a class="navbar-brand fw-bold" routerLink="/">AIS <span class="text-info">Artificial Intelligent Solutions</span></a>
+    <button
+      class="navbar-toggler"
+      type="button"
+      data-bs-toggle="collapse"
+      data-bs-target="#aisNavbar"
+      aria-controls="aisNavbar"
+      aria-expanded="false"
+      aria-label="Toggle navigation"
+    >
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="aisNavbar">
+      <ul class="navbar-nav ms-auto align-items-lg-center gap-lg-2">
+        <li class="nav-item"><a class="nav-link" routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Home</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/about" routerLinkActive="active">About</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/services" routerLinkActive="active">Services</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/industries" routerLinkActive="active">Industries</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/case-studies" routerLinkActive="active">Case Studies</a></li>
+        <li class="nav-item"><a class="nav-link" routerLink="/contact" routerLinkActive="active">Contact</a></li>
+        <li class="nav-item">
+          <a class="btn btn-info btn-sm text-dark fw-semibold ms-lg-2" routerLink="/consultation">Request Consultation</a>
+        </li>
+        @if (authService.isAuthenticated()) {
+          <li class="nav-item"><a class="nav-link" routerLink="/admin/dashboard" routerLinkActive="active">Dashboard</a></li>
+          <li class="nav-item">
+            <button type="button" class="btn btn-outline-light btn-sm ms-lg-2" (click)="logout()">
+              Logout ({{ authService.username() }})
+            </button>
+          </li>
+        } @else {
+          <li class="nav-item"><a class="nav-link" routerLink="/login" routerLinkActive="active">Admin Login</a></li>
+        }
+      </ul>
+    </div>
+  </div>
+</nav>
+
+----------------------------------------------------------
+
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.scss
+.navbar-brand {
+  font-size: 1.25rem;
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\shared\layouts\header\header.ts
+import { Component } from '@angular/core';
+import { RouterLink, RouterLinkActive } from '@angular/router';
+import { AuthService } from '../../../core/services/auth.service';
+
+@Component({
+  selector: 'app-header',
+  standalone: true,
+  imports: [RouterLink, RouterLinkActive],
+  templateUrl: './header.html',
+  styleUrl: './header.scss',
+})
+export class Header {
+  constructor(readonly authService: AuthService) {}
+
+  logout(): void {
+    this.authService.logout();
+  }
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.config.ts
+import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+
+import { routes } from './app.routes';
+import { authInterceptor } from './core/interceptors/auth.interceptor';
+import { errorInterceptor } from './core/interceptors/error.interceptor';
+import { mockInterceptor } from './core/interceptors/mock.interceptor';
+import { environment } from '../environments/environment';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideBrowserGlobalErrorListeners(),
+    provideZoneChangeDetection({ eventCoalescing: true }),
+    provideRouter(routes, withComponentInputBinding()),
+    provideHttpClient(
+      withInterceptors([
+        // Must run first so it can short-circuit before authInterceptor/errorInterceptor
+        // try to talk to a real backend.
+        ...(environment.useMockData ? [mockInterceptor] : []),
+        authInterceptor,
+        errorInterceptor,
+      ])
+    ),
+  ]
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.html
+<app-header />
+
+<main class="flex-grow-1">
+  <router-outlet />
+</main>
+
+<app-footer />
+
+<app-toast-container />
+
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.routes.ts
+import { Routes } from '@angular/router';
+import { authGuard } from './core/guards/auth.guard';
+import { adminOnlyGuard } from './core/guards/role.guard';
+
+export const routes: Routes = [
+  {
+    path: '',
+    loadComponent: () => import('./features/home/home').then((m) => m.Home),
+  },
+  {
+    path: 'about',
+    loadComponent: () => import('./features/about/about').then((m) => m.About),
+  },
+  {
+    path: 'services',
+    loadComponent: () => import('./features/services/services').then((m) => m.Services),
+  },
+  {
+    path: 'industries',
+    loadComponent: () => import('./features/industries/industries').then((m) => m.Industries),
+  },
+  {
+    path: 'industries/:id',
+    loadComponent: () =>
+      import('./features/industries/industry-detail/industry-detail').then((m) => m.IndustryDetail),
+  },
+  {
+    path: 'case-studies',
+    loadComponent: () => import('./features/case-studies/case-studies').then((m) => m.CaseStudies),
+  },
+  {
+    path: 'contact',
+    loadComponent: () => import('./features/contact/contact').then((m) => m.Contact),
+  },
+  {
+    path: 'consultation',
+    loadComponent: () => import('./features/consultation/consultation').then((m) => m.Consultation),
+  },
+  {
+    path: 'login',
+    loadComponent: () => import('./features/login/login').then((m) => m.Login),
+  },
+  {
+    path: 'admin/dashboard',
+    canActivate: [authGuard],
+    loadComponent: () => import('./features/admin/dashboard/dashboard').then((m) => m.Dashboard),
+  },
+  {
+    path: 'admin/leads',
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./features/admin/leads-management/leads-management').then((m) => m.LeadsManagement),
+  },
+  {
+    path: 'admin/content',
+    canActivate: [authGuard, adminOnlyGuard],
+    loadComponent: () =>
+      import('./features/admin/content-management/content-management').then(
+        (m) => m.ContentManagement,
+      ),
+  },
+  {
+    path: '**',
+    redirectTo: '',
+  },
+];
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.scss
+:host {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.spec.ts
+import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { App } from './app';
+
+describe('App', () => {
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [App],
+      providers: [provideRouter([]), provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+  });
+
+  it('should create the app', () => {
+    const fixture = TestBed.createComponent(App);
+    const app = fixture.componentInstance;
+    expect(app).toBeTruthy();
+  });
+
+  it('should render the header brand', () => {
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelector('.navbar-brand')?.textContent).toContain('AIS');
+  });
+});
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\app\app.ts
+import { Component } from '@angular/core';
+import { RouterOutlet } from '@angular/router';
+import { Header } from './shared/layouts/header/header';
+import { Footer } from './shared/layouts/footer/footer';
+import { ToastContainer } from './shared/components/toast-container/toast-container';
+
+@Component({
+  selector: 'app-root',
+  imports: [RouterOutlet, Header, Footer, ToastContainer],
+  templateUrl: './app.html',
+  styleUrl: './app.scss'
+})
+export class App {}
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.mock.ts
+export const environment = {
+  production: false,
+  // Never actually called - mock.interceptor.ts short-circuits every /api/v1/** request.
+  apiUrl: 'http://localhost:8080/api/v1',
+  analyticsEnabled: false,
+  useMockData: true,
+};
+
+----------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\environments\environment.ts
+export const environment = {
+  production: false,
+  apiUrl: 'http://localhost:8080/api/v1',
+  analyticsEnabled: false,
+  useMockData: false,
+};
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>AIS - Artificial Intelligent Solutions</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\main.ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { appConfig } from './app/app.config';
+import { App } from './app/app';
+
+bootstrapApplication(App, appConfig)
+  .catch((err) => console.error(err));
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\src\styles.scss
+/* You can add global styles to this file, and also import other style files */
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\angular.json
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": {
+    "packageManager": "npm"
+  },
+  "newProjectRoot": "projects",
+  "projects": {
+    "ais-frontend": {
+      "projectType": "application",
+      "schematics": {
+        "@schematics/angular:component": {
+          "style": "scss"
+        }
+      },
+      "root": "",
+      "sourceRoot": "src",
+      "prefix": "app",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "src/main.ts",
+            "polyfills": [
+              "zone.js"
+            ],
+            "tsConfig": "tsconfig.app.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "node_modules/bootstrap/dist/css/bootstrap.min.css",
+              "src/styles.scss"
+            ],
+            "scripts": [
+              "node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"
+            ]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "500kB",
+                  "maximumError": "1MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "8kB"
+                }
+              ],
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.gcp.ts"
+                }
+              ]
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            },
+            "local": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.local.ts"
+                }
+              ]
+            },
+            "docker": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.docker.ts"
+                }
+              ]
+            },
+            "gcp": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.gcp.ts"
+                }
+              ]
+            },
+            "cloudrun": {
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.cloudrun.ts"
+                }
+              ]
+            },
+            "mock": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true,
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.mock.ts"
+                }
+              ]
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "ais-frontend:build:production"
+            },
+            "development": {
+              "buildTarget": "ais-frontend:build:development"
+            },
+            "local": {
+              "buildTarget": "ais-frontend:build:local"
+            },
+            "mock": {
+              "buildTarget": "ais-frontend:build:mock"
+            }
+          },
+          "defaultConfiguration": "local"
+        },
+        "extract-i18n": {
+          "builder": "@angular/build:extract-i18n"
+        },
+        "test": {
+          "builder": "@angular/build:karma",
+          "options": {
+            "polyfills": [
+              "zone.js",
+              "zone.js/testing"
+            ],
+            "tsConfig": "tsconfig.spec.json",
+            "inlineStyleLanguage": "scss",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "src/styles.scss"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\Dockerfile
+# Multi-stage build for the Angular 20 SPA. Build context: ./frontend
+# (see docker-compose.yml, which builds this with no args -> BUILD_CONFIGURATION=docker).
+
+FROM node:22-alpine AS build
+WORKDIR /workspace
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+# Which frontend/src/environments/environment.*.ts file gets baked into the bundle.
+ARG BUILD_CONFIGURATION=docker
+RUN npx ng build --configuration=${BUILD_CONFIGURATION}
+
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /workspace/dist/ais-frontend/browser /usr/share/nginx/html
+EXPOSE 80
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\nginx.conf
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location ~* \.(?:css|js|map|jpe?g|gif|png|svg|ico|woff2?)$ {
+        expires 30d;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # Angular client-side routing: serve index.html for any unmatched path so deep
+    # links (e.g. /services/consulting) work on refresh/direct navigation.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\package.json
+{
+  "name": "ais-frontend",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "start": "ng serve",
+    "start:mock": "ng serve --configuration=mock",
+    "build": "ng build",
+    "watch": "ng build --watch --configuration development",
+    "test": "ng test"
+  },
+  "prettier": {
+    "printWidth": 100,
+    "singleQuote": true,
+    "overrides": [
+      {
+        "files": "*.html",
+        "options": {
+          "parser": "angular"
+        }
+      }
+    ]
+  },
+  "private": true,
+  "dependencies": {
+    "@angular/common": "20.3.26",
+    "@angular/compiler": "20.3.26",
+    "@angular/core": "20.3.26",
+    "@angular/forms": "20.3.26",
+    "@angular/platform-browser": "20.3.26",
+    "@angular/router": "20.3.26",
+    "bootstrap": "5.3.3",
+    "rxjs": "7.8.1",
+    "tslib": "2.7.0",
+    "zone.js": "0.15.0"
+  },
+  "devDependencies": {
+    "@angular/build": "20.3.32",
+    "@angular/cli": "20.3.32",
+    "@angular/compiler-cli": "20.3.26",
+    "@types/jasmine": "5.1.4",
+    "jasmine-core": "5.9.0",
+    "karma": "6.4.4",
+    "karma-chrome-launcher": "3.2.0",
+    "karma-coverage": "2.2.1",
+    "karma-jasmine": "5.1.0",
+    "karma-jasmine-html-reporter": "2.1.0",
+    "typescript": "5.9.2"
+  }
+}
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.app.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/app",
+    "types": []
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
+  ]
+}
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2022",
+    "module": "preserve"
+  },
+  "angularCompilerOptions": {
+    "enableI18nLegacyMessageIdFormat": false,
+    "strictInjectionParameters": true,
+    "strictInputAccessModifiers": true,
+    "typeCheckHostBindings": true,
+    "strictTemplates": true
+  },
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.app.json"
+    },
+    {
+      "path": "./tsconfig.spec.json"
+    }
+  ]
+}
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\frontend\tsconfig.spec.json
+/* To learn more about Typescript configuration file: https://www.typescriptlang.org/docs/handbook/tsconfig-json.html. */
+/* To learn more about Angular compiler options: https://angular.dev/reference/configs/angular-compiler-options. */
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/spec",
+    "types": [
+      "jasmine"
+    ]
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.spec.ts"
+  ]
+}
+
+---------------------------------------------------------
+C:\ws\agent\website-ais\docker-compose.yml
+
+# Reduced-footprint stack: 1 Python/FastAPI backend (replaces the former 4 Spring Boot
+# services + gateway) + unchanged Angular public + admin site + Postgres.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ais-postgres
+    environment:
+      POSTGRES_DB: ais_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - ais_postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ais-backend:
+    build:
+      context: ./backend-python
+    container_name: ais-backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://ais_app_user:ais_app_pass@postgres:5432/ais_db
+      JWT_SECRET: ${JWT_SECRET:-local-dev-only-change-me-must-be-32-bytes-minimum}
+      CORS_ALLOWED_ORIGINS: http://localhost:4200
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ais-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ais-frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - ais-backend
+    restart: unless-stopped
+
+volumes:
+  ais_postgres_data:
+
