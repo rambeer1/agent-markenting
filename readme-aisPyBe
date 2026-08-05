@@ -1,0 +1,1361 @@
+C:\ws\agent\website-ais\backend-python\app\routers\__init__.py
+C:\ws\agent\website-ais\backend-python\app\routers\auth.py
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.exceptions import InvalidCredentialsException, success_response
+from app.models import User
+from app.schemas import LoginRequest, LoginResponse, RefreshRequest
+from app.security import create_access_token, create_refresh_token, decode_token, verify_password
+from app.config import settings
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _login_response(user: User) -> dict:
+    return LoginResponse(
+        accessToken=create_access_token(user.username, user.role),
+        refreshToken=create_refresh_token(user.username, user.role),
+        username=user.username,
+        role=user.role,
+        expiresInMs=settings.access_token_expiration_ms,
+    ).model_dump()
+
+
+@router.post("/login")
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == request.username).first()
+    # Deliberately identical error for unknown username vs wrong password (FR-10).
+    if not user or user.status != "ACTIVE" or not verify_password(request.password, user.password):
+        raise InvalidCredentialsException()
+    return success_response(_login_response(user))
+
+
+@router.post("/refresh")
+def refresh(request: RefreshRequest, db: Session = Depends(get_db)):
+    payload = decode_token(request.refreshToken, "refresh")
+    user = db.query(User).filter(User.username == payload["sub"]).first()
+    if not user or user.status != "ACTIVE":
+        raise InvalidCredentialsException()
+    return success_response(_login_response(user))
+
+
+@router.post("/logout")
+def logout():
+    # Stateless JWTs - client just discards the tokens.
+    return success_response(None)
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\routers\consultation.py
+import csv
+import io
+import math
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import Response
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.exceptions import ApiError, ResourceNotFoundException, success_response
+from app.models import LEAD_STATUS_FUNNEL, ConsultationRequest
+from app.schemas import ConsultationRequestDto, DashboardStatsDto, UpdateStatusDto
+from app.security import require_roles
+
+router = APIRouter(prefix="/consultation", tags=["consultation"])
+
+
+def _dto(o: ConsultationRequest) -> dict:
+    return {
+        "id": o.id,
+        "referenceNumber": o.reference_number,
+        "organizationName": o.organization_name,
+        "contactPerson": o.contact_person,
+        "mobile": o.mobile,
+        "email": o.email,
+        "industry": o.industry,
+        "organizationSize": o.organization_size,
+        "requirements": o.requirements,
+        "preferredEngagementStep": o.preferred_engagement_step,
+        "status": o.status,
+        "internalRemarks": o.internal_remarks,
+        "createdDate": o.created_date.isoformat() if o.created_date else None,
+    }
+
+
+def _generate_reference_number(db: Session) -> str:
+    # BR-1: globally unique reference number, format AIS-YYYYMMDD-NNNN.
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
+    prefix = f"AIS-{today}-"
+    count_today = (
+        db.query(ConsultationRequest)
+        .filter(ConsultationRequest.reference_number.like(f"{prefix}%"))
+        .count()
+    )
+    return f"{prefix}{count_today + 1:04d}"
+
+
+@router.post("/requests", status_code=201)
+def submit_request(body: ConsultationRequestDto, db: Session = Depends(get_db)):
+    entity = ConsultationRequest(
+        reference_number=_generate_reference_number(db),
+        organization_name=body.organizationName,
+        contact_person=body.contactPerson,
+        mobile=body.mobile,
+        email=body.email,
+        industry=body.industry,
+        organization_size=body.organizationSize,
+        requirements=body.requirements,
+        preferred_engagement_step=body.preferredEngagementStep,
+        status="NEW",
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_dto(entity))
+
+
+@router.get("/requests")
+def list_requests(
+    page: int = Query(default=0, ge=0),
+    size: int = Query(default=10, ge=1, le=100),
+    industry: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_roles("ADMIN", "EDITOR")),
+):
+    q = db.query(ConsultationRequest)
+    if industry:
+        q = q.filter(ConsultationRequest.industry == industry)
+    if status:
+        q = q.filter(ConsultationRequest.status == status)
+    q = q.order_by(ConsultationRequest.created_date.desc())
+    total = q.count()
+    items = q.offset(page * size).limit(size).all()
+    return success_response({
+        "content": [_dto(i) for i in items],
+        "totalElements": total,
+        "totalPages": math.ceil(total / size) if size else 0,
+        "page": page,
+        "size": size,
+    })
+
+
+# NOTE: static sub-paths (/export, /dashboard/stats) must be routed before the
+# dynamic "/{item_id}" path below, or FastAPI will try to parse them as an id.
+@router.get("/requests/export")
+def export_requests_csv(db: Session = Depends(get_db),
+                         user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    items = db.query(ConsultationRequest).order_by(ConsultationRequest.created_date.desc()).all()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "id", "reference_number", "organization_name", "contact_person", "mobile", "email",
+        "industry", "organization_size", "requirements", "preferred_engagement_step", "status",
+        "internal_remarks", "created_date",
+    ])
+    for o in items:
+        writer.writerow([
+            o.id, o.reference_number, o.organization_name, o.contact_person, o.mobile, o.email,
+            o.industry, o.organization_size, o.requirements, o.preferred_engagement_step,
+            o.status, o.internal_remarks, o.created_date.isoformat() if o.created_date else "",
+        ])
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=consultation-requests.csv"},
+    )
+
+
+@router.get("/dashboard/stats")
+def dashboard_stats(db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    total = db.query(ConsultationRequest).count()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    recent = db.query(ConsultationRequest).filter(ConsultationRequest.created_date >= cutoff).count()
+    by_industry = dict(
+        db.query(ConsultationRequest.industry, func.count(ConsultationRequest.id))
+        .group_by(ConsultationRequest.industry).all()
+    )
+    by_status = dict(
+        db.query(ConsultationRequest.status, func.count(ConsultationRequest.id))
+        .group_by(ConsultationRequest.status).all()
+    )
+    return success_response(DashboardStatsDto(
+        totalRequests=total, newRequestsLast30Days=recent,
+        requestsByIndustry=by_industry, requestsByStatus=by_status,
+    ).model_dump())
+
+
+@router.get("/requests/{item_id}")
+def get_request(item_id: int, db: Session = Depends(get_db),
+                 user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = db.query(ConsultationRequest).get(item_id)
+    if not entity:
+        raise ResourceNotFoundException(f"Consultation request with id {item_id} not found")
+    return success_response(_dto(entity))
+
+
+@router.patch("/requests/{item_id}/status")
+def update_status(item_id: int, body: UpdateStatusDto, db: Session = Depends(get_db),
+                   user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = db.query(ConsultationRequest).get(item_id)
+    if not entity:
+        raise ResourceNotFoundException(f"Consultation request with id {item_id} not found")
+
+    # BR-2: forward-only funnel progression; moving backward requires ROLE_ADMIN + a remark.
+    current_index = LEAD_STATUS_FUNNEL.index(entity.status)
+    new_index = LEAD_STATUS_FUNNEL.index(body.status)
+    if new_index < current_index:
+        if "ROLE_ADMIN" not in user["roles"]:
+            raise ApiError(403, "FORBIDDEN", "Only an Admin may move a lead backward in the funnel")
+        if not body.internalRemarks:
+            raise ApiError(400, "VALIDATION_FAILED", "A remark is required to move a lead backward",
+                            ["internalRemarks: required when moving status backward"])
+
+    entity.status = body.status
+    if body.internalRemarks is not None:
+        entity.internal_remarks = body.internalRemarks
+    db.commit()
+    db.refresh(entity)
+    return success_response(_dto(entity))
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\routers\content.py
+import math
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.exceptions import ResourceNotFoundException, success_response
+from app.models import (
+    CaseStudy,
+    CompanyInfo,
+    ContactMessage,
+    Industry,
+    ServiceOffering,
+    Testimonial,
+    UseCase,
+)
+from app.schemas import (
+    CaseStudyDto,
+    CaseStudyRequest,
+    CompanyInfoDto,
+    ContactMessageDto,
+    ContactMessageRequest,
+    HomeDto,
+    IndustryDto,
+    IndustryRequest,
+    ServiceOfferingDto,
+    ServiceOfferingRequest,
+    TestimonialDto,
+    TestimonialRequest,
+    UseCaseDto,
+    UseCaseRequest,
+)
+from app.security import require_roles
+
+router = APIRouter(prefix="/content", tags=["content"])
+
+
+# ---------- DTO mapping helpers (SQLAlchemy snake_case -> API camelCase) ----------
+def _service_dto(o: ServiceOffering) -> dict:
+    return ServiceOfferingDto(
+        id=o.id, stepNumber=o.step_number, title=o.title, description=o.description,
+        deliverables=o.deliverables, estimatedDuration=o.estimated_duration, status=o.status,
+    ).model_dump()
+
+
+def _industry_dto(o: Industry) -> dict:
+    return IndustryDto(
+        id=o.id, name=o.name, iconUrl=o.icon_url, description=o.description,
+        painPoints=o.pain_points, howAiHelps=o.how_ai_helps,
+    ).model_dump()
+
+
+def _use_case_dto(o: UseCase) -> dict:
+    return UseCaseDto(
+        id=o.id, industryId=o.industry_id, industryName=o.industry.name if o.industry else None,
+        name=o.name, problemStatement=o.problem_statement, proposedSolution=o.proposed_solution,
+        expectedRoi=o.expected_roi,
+    ).model_dump()
+
+
+def _case_study_dto(o: CaseStudy) -> dict:
+    return CaseStudyDto(
+        id=o.id, industryId=o.industry_id, industryName=o.industry.name if o.industry else None,
+        clientType=o.client_type, challenge=o.challenge, solution=o.solution,
+        techStack=o.tech_stack, results=o.results, publishedDate=o.published_date,
+    ).model_dump()
+
+
+def _testimonial_dto(o: Testimonial) -> dict:
+    return TestimonialDto(
+        id=o.id, clientName=o.client_name, organization=o.organization, designation=o.designation,
+        testimonialText=o.testimonial_text, rating=o.rating,
+    ).model_dump()
+
+
+def _contact_dto(o: ContactMessage) -> dict:
+    return ContactMessageDto(
+        id=o.id, name=o.name, email=o.email, mobile=o.mobile, subject=o.subject,
+        message=o.message, createdDate=o.created_date,
+    ).model_dump()
+
+
+# ---------- Public read endpoints ----------
+@router.get("/home")
+def get_home(db: Session = Depends(get_db)):
+    company = db.query(CompanyInfo).first()
+    industries = db.query(Industry).all()
+    services = db.query(ServiceOffering).order_by(ServiceOffering.step_number).all()
+    case_studies = db.query(CaseStudy).order_by(CaseStudy.published_date.desc()).limit(3).all()
+    testimonials = db.query(Testimonial).limit(3).all()
+    return success_response(
+        HomeDto(
+            companyName=company.name if company else "AIS",
+            tagline=company.tagline if company else None,
+            industries=[_industry_dto(i) for i in industries],
+            services=[_service_dto(s) for s in services],
+            featuredCaseStudies=[_case_study_dto(c) for c in case_studies],
+            featuredTestimonials=[_testimonial_dto(t) for t in testimonials],
+        ).model_dump()
+    )
+
+
+@router.get("/about")
+def get_about(db: Session = Depends(get_db)):
+    company = db.query(CompanyInfo).first()
+    if not company:
+        raise ResourceNotFoundException("Company info not found")
+    return success_response(CompanyInfoDto(
+        id=company.id, name=company.name, tagline=company.tagline, mission=company.mission,
+        vision=company.vision, founderBio=company.founder_bio, address=company.address,
+        phone=company.phone, email=company.email, linkedinUrl=company.linkedin_url,
+    ).model_dump())
+
+
+@router.get("/services")
+def list_services(db: Session = Depends(get_db)):
+    items = db.query(ServiceOffering).order_by(ServiceOffering.step_number).all()
+    return success_response([_service_dto(s) for s in items])
+
+
+@router.get("/services/{item_id}")
+def get_service(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(ServiceOffering).get(item_id)
+    if not item:
+        raise ResourceNotFoundException(f"Service with id {item_id} not found")
+    return success_response(_service_dto(item))
+
+
+@router.get("/industries")
+def list_industries(db: Session = Depends(get_db)):
+    items = db.query(Industry).all()
+    return success_response([_industry_dto(i) for i in items])
+
+
+@router.get("/industries/{item_id}")
+def get_industry(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(Industry).get(item_id)
+    if not item:
+        raise ResourceNotFoundException(f"Industry with id {item_id} not found")
+    return success_response(_industry_dto(item))
+
+
+@router.get("/use-cases")
+def list_use_cases(industryId: int | None = Query(default=None), db: Session = Depends(get_db)):
+    q = db.query(UseCase)
+    if industryId is not None:
+        q = q.filter(UseCase.industry_id == industryId)
+    return success_response([_use_case_dto(u) for u in q.all()])
+
+
+@router.get("/use-cases/{item_id}")
+def get_use_case(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(UseCase).get(item_id)
+    if not item:
+        raise ResourceNotFoundException(f"Use case with id {item_id} not found")
+    return success_response(_use_case_dto(item))
+
+
+@router.get("/case-studies")
+def list_case_studies(db: Session = Depends(get_db)):
+    items = db.query(CaseStudy).order_by(CaseStudy.published_date.desc()).all()
+    return success_response([_case_study_dto(c) for c in items])
+
+
+@router.get("/case-studies/{item_id}")
+def get_case_study(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(CaseStudy).get(item_id)
+    if not item:
+        raise ResourceNotFoundException(f"Case study with id {item_id} not found")
+    return success_response(_case_study_dto(item))
+
+
+@router.get("/testimonials")
+def list_testimonials(db: Session = Depends(get_db)):
+    items = db.query(Testimonial).all()
+    return success_response([_testimonial_dto(t) for t in items])
+
+
+@router.post("/contact", status_code=201)
+def submit_contact(request: ContactMessageRequest, db: Session = Depends(get_db)):
+    entity = ContactMessage(
+        name=request.name, email=request.email, mobile=request.mobile,
+        subject=request.subject, message=request.message,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_contact_dto(entity))
+
+
+@router.get("/contact")
+def list_contact_messages(
+    page: int = Query(default=0, ge=0),
+    size: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: dict = Depends(require_roles("ADMIN", "EDITOR")),
+):
+    q = db.query(ContactMessage).order_by(ContactMessage.created_date.desc())
+    total = q.count()
+    items = q.offset(page * size).limit(size).all()
+    return success_response({
+        "content": [_contact_dto(c) for c in items],
+        "totalElements": total,
+        "totalPages": math.ceil(total / size) if size else 0,
+        "page": page,
+        "size": size,
+    })
+
+
+# ---------- Admin CRUD endpoints ----------
+def _get_or_404(db: Session, model, item_id: int, label: str):
+    item = db.query(model).get(item_id)
+    if not item:
+        raise ResourceNotFoundException(f"{label} with id {item_id} not found")
+    return item
+
+
+@router.post("/admin/services")
+def create_service(body: ServiceOfferingRequest, db: Session = Depends(get_db),
+                    user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = ServiceOffering(
+        step_number=body.stepNumber, title=body.title, description=body.description,
+        deliverables=body.deliverables, estimated_duration=body.estimatedDuration,
+        status=body.status or "ACTIVE",
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_service_dto(entity))
+
+
+@router.put("/admin/services/{item_id}")
+def update_service(item_id: int, body: ServiceOfferingRequest, db: Session = Depends(get_db),
+                    user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = _get_or_404(db, ServiceOffering, item_id, "Service")
+    entity.step_number = body.stepNumber
+    entity.title = body.title
+    entity.description = body.description
+    entity.deliverables = body.deliverables
+    entity.estimated_duration = body.estimatedDuration
+    entity.status = body.status or entity.status
+    db.commit()
+    db.refresh(entity)
+    return success_response(_service_dto(entity))
+
+
+@router.delete("/admin/services/{item_id}", status_code=204)
+def delete_service(item_id: int, db: Session = Depends(get_db),
+                    user: dict = Depends(require_roles("ADMIN"))):
+    entity = _get_or_404(db, ServiceOffering, item_id, "Service")
+    db.delete(entity)
+    db.commit()
+
+
+@router.post("/admin/industries")
+def create_industry(body: IndustryRequest, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = Industry(
+        name=body.name, icon_url=body.iconUrl, description=body.description,
+        pain_points=body.painPoints, how_ai_helps=body.howAiHelps,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_industry_dto(entity))
+
+
+@router.put("/admin/industries/{item_id}")
+def update_industry(item_id: int, body: IndustryRequest, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = _get_or_404(db, Industry, item_id, "Industry")
+    entity.name = body.name
+    entity.icon_url = body.iconUrl
+    entity.description = body.description
+    entity.pain_points = body.painPoints
+    entity.how_ai_helps = body.howAiHelps
+    db.commit()
+    db.refresh(entity)
+    return success_response(_industry_dto(entity))
+
+
+@router.delete("/admin/industries/{item_id}", status_code=204)
+def delete_industry(item_id: int, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN"))):
+    entity = _get_or_404(db, Industry, item_id, "Industry")
+    db.delete(entity)
+    db.commit()
+
+
+@router.post("/admin/use-cases")
+def create_use_case(body: UseCaseRequest, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = UseCase(
+        industry_id=body.industryId, name=body.name, problem_statement=body.problemStatement,
+        proposed_solution=body.proposedSolution, expected_roi=body.expectedRoi,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_use_case_dto(entity))
+
+
+@router.put("/admin/use-cases/{item_id}")
+def update_use_case(item_id: int, body: UseCaseRequest, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = _get_or_404(db, UseCase, item_id, "Use case")
+    entity.industry_id = body.industryId
+    entity.name = body.name
+    entity.problem_statement = body.problemStatement
+    entity.proposed_solution = body.proposedSolution
+    entity.expected_roi = body.expectedRoi
+    db.commit()
+    db.refresh(entity)
+    return success_response(_use_case_dto(entity))
+
+
+@router.delete("/admin/use-cases/{item_id}", status_code=204)
+def delete_use_case(item_id: int, db: Session = Depends(get_db),
+                     user: dict = Depends(require_roles("ADMIN"))):
+    entity = _get_or_404(db, UseCase, item_id, "Use case")
+    db.delete(entity)
+    db.commit()
+
+
+@router.post("/admin/case-studies")
+def create_case_study(body: CaseStudyRequest, db: Session = Depends(get_db),
+                       user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = CaseStudy(
+        industry_id=body.industryId, client_type=body.clientType, challenge=body.challenge,
+        solution=body.solution, tech_stack=body.techStack, results=body.results,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_case_study_dto(entity))
+
+
+@router.put("/admin/case-studies/{item_id}")
+def update_case_study(item_id: int, body: CaseStudyRequest, db: Session = Depends(get_db),
+                       user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = _get_or_404(db, CaseStudy, item_id, "Case study")
+    entity.industry_id = body.industryId
+    entity.client_type = body.clientType
+    entity.challenge = body.challenge
+    entity.solution = body.solution
+    entity.tech_stack = body.techStack
+    entity.results = body.results
+    db.commit()
+    db.refresh(entity)
+    return success_response(_case_study_dto(entity))
+
+
+@router.delete("/admin/case-studies/{item_id}", status_code=204)
+def delete_case_study(item_id: int, db: Session = Depends(get_db),
+                       user: dict = Depends(require_roles("ADMIN"))):
+    entity = _get_or_404(db, CaseStudy, item_id, "Case study")
+    db.delete(entity)
+    db.commit()
+
+
+@router.post("/admin/testimonials")
+def create_testimonial(body: TestimonialRequest, db: Session = Depends(get_db),
+                        user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = Testimonial(
+        client_name=body.clientName, organization=body.organization, designation=body.designation,
+        testimonial_text=body.testimonialText, rating=body.rating,
+    )
+    db.add(entity)
+    db.commit()
+    db.refresh(entity)
+    return success_response(_testimonial_dto(entity))
+
+
+@router.put("/admin/testimonials/{item_id}")
+def update_testimonial(item_id: int, body: TestimonialRequest, db: Session = Depends(get_db),
+                        user: dict = Depends(require_roles("ADMIN", "EDITOR"))):
+    entity = _get_or_404(db, Testimonial, item_id, "Testimonial")
+    entity.client_name = body.clientName
+    entity.organization = body.organization
+    entity.designation = body.designation
+    entity.testimonial_text = body.testimonialText
+    entity.rating = body.rating
+    db.commit()
+    db.refresh(entity)
+    return success_response(_testimonial_dto(entity))
+
+
+@router.delete("/admin/testimonials/{item_id}", status_code=204)
+def delete_testimonial(item_id: int, db: Session = Depends(get_db),
+                        user: dict = Depends(require_roles("ADMIN"))):
+    entity = _get_or_404(db, Testimonial, item_id, "Testimonial")
+    db.delete(entity)
+    db.commit()
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\__init__.py
+C:\ws\agent\website-ais\backend-python\app\config.py
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="")
+
+    # Single consolidated DB user replaces the 3 per-service roles used by the Java stack.
+    database_url: str = (
+        "postgresql+psycopg2://ais_app_user:ais_app_pass@localhost:5432/ais_db"
+    )
+    jwt_secret: str = "local-dev-only-change-me-must-be-32-bytes-minimum"
+    access_token_expiration_ms: int = 3_600_000
+    refresh_token_expiration_ms: int = 604_800_000
+    cors_allowed_origins: str = "http://localhost:4200"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
+
+
+settings = Settings()
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\database.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+from app.config import settings
+
+engine = create_engine(settings.database_url, pool_pre_ping=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\exceptions.py
+from datetime import datetime, timezone
+
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+
+class ApiError(Exception):
+    """Raised for any handled business error; mirrors the Java services' ApiErrorResponse."""
+
+    def __init__(self, status_code: int, error_code: str, message: str, details: list[str] | None = None):
+        self.status_code = status_code
+        self.error_code = error_code
+        self.message = message
+        self.details = details or []
+
+
+class ResourceNotFoundException(ApiError):
+    def __init__(self, message: str):
+        super().__init__(404, "RESOURCE_NOT_FOUND", message)
+
+
+class DuplicateResourceException(ApiError):
+    def __init__(self, message: str):
+        super().__init__(409, "DUPLICATE_RESOURCE", message)
+
+
+class InvalidCredentialsException(ApiError):
+    def __init__(self):
+        super().__init__(401, "INVALID_CREDENTIALS", "Invalid username or password")
+
+
+def _error_body(error_code: str, message: str, details: list[str]) -> dict:
+    return {
+        "success": False,
+        "errorCode": error_code,
+        "message": message,
+        "details": details,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ApiError)
+    async def handle_api_error(request: Request, exc: ApiError):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_error_body(exc.error_code, exc.message, exc.details),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(request: Request, exc: RequestValidationError):
+        details = [
+            f"{'.'.join(str(p) for p in err['loc'] if p != 'body')}: {err['msg']}"
+            for err in exc.errors()
+        ]
+        return JSONResponse(
+            status_code=400,
+            content=_error_body("VALIDATION_FAILED", "Request validation failed", details),
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception):
+        return JSONResponse(
+            status_code=500,
+            content=_error_body("INTERNAL_ERROR", "An unexpected error occurred", []),
+        )
+
+
+def success_response(data=None, message: str | None = None) -> dict:
+    return jsonable_encoder(
+        {
+            "success": True,
+            "data": data,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\main.py
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import settings
+from app.database import Base, SessionLocal, engine
+from app.exceptions import register_exception_handlers
+from app.routers import auth, consultation, content
+from app.seed import seed_if_empty
+
+app = FastAPI(title="AIS Website API", version="1.0.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+register_exception_handlers(app)
+
+app.include_router(auth.router, prefix="/api/v1")
+app.include_router(content.router, prefix="/api/v1")
+app.include_router(consultation.router, prefix="/api/v1")
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        seed_if_empty(db)
+    finally:
+        db.close()
+
+
+@app.get("/actuator/health")
+def health():
+    return {"status": "UP"}
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\models.py
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.orm import relationship
+
+from app.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    username = Column(String(255), nullable=False, unique=True, index=True)
+    password = Column(String(500), nullable=False)
+    role = Column(String(50), nullable=False)  # ADMIN | EDITOR
+    status = Column(String(20), default="ACTIVE")
+
+
+class CompanyInfo(Base):
+    __tablename__ = "company_info"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    tagline = Column(String(500))
+    mission = Column(String(2000))
+    vision = Column(String(2000))
+    founder_bio = Column(Text)
+    address = Column(String(500))
+    phone = Column(String(50))
+    email = Column(String(255))
+    linkedin_url = Column(String(255))
+
+
+class ServiceOffering(Base):
+    __tablename__ = "service_offering"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    step_number = Column(Integer, nullable=False)
+    title = Column(String(255), nullable=False)
+    description = Column(Text)
+    deliverables = Column(String(2000))
+    estimated_duration = Column(String(100))
+    status = Column(String(20), default="ACTIVE")
+
+
+class Industry(Base):
+    __tablename__ = "industry"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    icon_url = Column(String(500))
+    description = Column(Text)
+    pain_points = Column(Text)
+    how_ai_helps = Column(Text)
+
+    use_cases = relationship("UseCase", back_populates="industry")
+    case_studies = relationship("CaseStudy", back_populates="industry")
+
+
+class UseCase(Base):
+    __tablename__ = "use_case"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    industry_id = Column(BigInteger, ForeignKey("industry.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    problem_statement = Column(Text)
+    proposed_solution = Column(Text)
+    expected_roi = Column(String(500))
+
+    industry = relationship("Industry", back_populates="use_cases")
+
+
+class CaseStudy(Base):
+    __tablename__ = "case_study"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    industry_id = Column(BigInteger, ForeignKey("industry.id"), nullable=True, index=True)
+    client_type = Column(String(255))
+    challenge = Column(Text)
+    solution = Column(Text)
+    tech_stack = Column(String(500))
+    results = Column(Text)
+    published_date = Column(DateTime(timezone=True))
+
+    industry = relationship("Industry", back_populates="case_studies")
+
+
+class Testimonial(Base):
+    __tablename__ = "testimonial"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    client_name = Column(String(255), nullable=False)
+    organization = Column(String(255))
+    designation = Column(String(255))
+    testimonial_text = Column(Text, nullable=False)
+    rating = Column(Integer)
+
+
+class ContactMessage(Base):
+    __tablename__ = "contact_message"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False)
+    mobile = Column(String(20))
+    subject = Column(String(255))
+    message = Column(Text, nullable=False)
+    created_date = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class ConsultationRequest(Base):
+    __tablename__ = "consultation_request"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    reference_number = Column(String(50), nullable=False, unique=True)
+    organization_name = Column(String(255), nullable=False)
+    contact_person = Column(String(255), nullable=False)
+    mobile = Column(String(20), nullable=False)
+    email = Column(String(255), nullable=False)
+    industry = Column(String(100), nullable=False, index=True)
+    organization_size = Column(String(100))
+    requirements = Column(Text)
+    preferred_engagement_step = Column(String(100))
+    status = Column(String(50), nullable=False, default="NEW", index=True)
+    internal_remarks = Column(Text)
+    created_date = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# BR-2: a consultation request's status may only move forward through this funnel
+# unless an Admin explicitly overrides it (enforced in routers/consultation.py).
+LEAD_STATUS_FUNNEL = [
+    "NEW",
+    "CONTACTED",
+    "QUALIFIED",
+    "PROPOSAL_SENT",
+    "NEGOTIATION",
+    "WON",
+    "LOST",
+]
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\schemas.py
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+LEAD_STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "PROPOSAL_SENT", "NEGOTIATION", "WON", "LOST"]
+
+
+# ---- Auth ----
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class RefreshRequest(BaseModel):
+    refreshToken: str = Field(min_length=1)
+
+
+class LoginResponse(BaseModel):
+    accessToken: str
+    refreshToken: str
+    username: str
+    role: str
+    expiresInMs: int
+
+
+# ---- Pagination ----
+class PageResponse(BaseModel):
+    content: list
+    totalElements: int
+    totalPages: int
+    page: int
+    size: int
+
+
+# ---- Content: public read DTOs ----
+class ServiceOfferingDto(BaseModel):
+    id: int
+    stepNumber: int
+    title: str
+    description: Optional[str] = None
+    deliverables: Optional[str] = None
+    estimatedDuration: Optional[str] = None
+    status: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class IndustryDto(BaseModel):
+    id: int
+    name: str
+    iconUrl: Optional[str] = None
+    description: Optional[str] = None
+    painPoints: Optional[str] = None
+    howAiHelps: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UseCaseDto(BaseModel):
+    id: int
+    industryId: int
+    industryName: Optional[str] = None
+    name: str
+    problemStatement: Optional[str] = None
+    proposedSolution: Optional[str] = None
+    expectedRoi: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CaseStudyDto(BaseModel):
+    id: int
+    industryId: Optional[int] = None
+    industryName: Optional[str] = None
+    clientType: Optional[str] = None
+    challenge: Optional[str] = None
+    solution: Optional[str] = None
+    techStack: Optional[str] = None
+    results: Optional[str] = None
+    publishedDate: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class TestimonialDto(BaseModel):
+    id: int
+    clientName: str
+    organization: Optional[str] = None
+    designation: Optional[str] = None
+    testimonialText: str
+    rating: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CompanyInfoDto(BaseModel):
+    id: int
+    name: str
+    tagline: Optional[str] = None
+    mission: Optional[str] = None
+    vision: Optional[str] = None
+    founderBio: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    linkedinUrl: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class HomeDto(BaseModel):
+    companyName: str
+    tagline: Optional[str] = None
+    industries: list[IndustryDto]
+    services: list[ServiceOfferingDto]
+    featuredCaseStudies: list[CaseStudyDto]
+    featuredTestimonials: list[TestimonialDto]
+
+
+class ContactMessageRequest(BaseModel):
+    name: str = Field(min_length=1)
+    email: EmailStr
+    mobile: Optional[str] = None
+    subject: Optional[str] = None
+    message: str = Field(min_length=1)
+
+
+class ContactMessageDto(BaseModel):
+    id: int
+    name: str
+    email: str
+    mobile: Optional[str] = None
+    subject: Optional[str] = None
+    message: str
+    createdDate: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ---- Content: admin write DTOs ----
+class ServiceOfferingRequest(BaseModel):
+    stepNumber: int
+    title: str = Field(min_length=1)
+    description: Optional[str] = None
+    deliverables: Optional[str] = None
+    estimatedDuration: Optional[str] = None
+    status: Optional[str] = None
+
+
+class IndustryRequest(BaseModel):
+    name: str = Field(min_length=1)
+    iconUrl: Optional[str] = None
+    description: Optional[str] = None
+    painPoints: Optional[str] = None
+    howAiHelps: Optional[str] = None
+
+
+class UseCaseRequest(BaseModel):
+    industryId: int
+    name: str = Field(min_length=1)
+    problemStatement: Optional[str] = None
+    proposedSolution: Optional[str] = None
+    expectedRoi: Optional[str] = None
+
+
+class CaseStudyRequest(BaseModel):
+    industryId: Optional[int] = None
+    clientType: str = Field(min_length=1)
+    challenge: Optional[str] = None
+    solution: Optional[str] = None
+    techStack: Optional[str] = None
+    results: Optional[str] = None
+
+
+class TestimonialRequest(BaseModel):
+    clientName: str = Field(min_length=1)
+    organization: Optional[str] = None
+    designation: Optional[str] = None
+    testimonialText: str = Field(min_length=1)
+    rating: int = Field(ge=1, le=5)
+
+
+# ---- Consultation ----
+class ConsultationRequestDto(BaseModel):
+    organizationName: str = Field(min_length=1)
+    contactPerson: str = Field(min_length=1)
+    mobile: str = Field(min_length=1, pattern=r"^\+?[0-9]{7,15}$")
+    email: EmailStr
+    industry: str = Field(min_length=1)
+    organizationSize: Optional[str] = None
+    requirements: Optional[str] = None
+    preferredEngagementStep: Optional[str] = None
+
+
+class ConsultationResponseDto(BaseModel):
+    id: int
+    referenceNumber: str
+    organizationName: str
+    contactPerson: str
+    mobile: str
+    email: str
+    industry: str
+    organizationSize: Optional[str] = None
+    requirements: Optional[str] = None
+    preferredEngagementStep: Optional[str] = None
+    status: str
+    internalRemarks: Optional[str] = None
+    createdDate: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateStatusDto(BaseModel):
+    status: str
+    internalRemarks: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        if v not in LEAD_STATUSES:
+            raise ValueError(f"status must be one of {LEAD_STATUSES}")
+        return v
+
+
+class DashboardStatsDto(BaseModel):
+    totalRequests: int
+    newRequestsLast30Days: int
+    requestsByIndustry: dict[str, int]
+    requestsByStatus: dict[str, int]
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\security.py
+from datetime import datetime, timedelta, timezone
+
+from fastapi import Depends, Header
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+
+from app.config import settings
+from app.exceptions import ApiError
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+ALGORITHM = "HS256"
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+
+def _create_token(username: str, role: str, token_type: str, expires_in_ms: int) -> str:
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(milliseconds=expires_in_ms)
+    payload = {
+        "sub": username,
+        "roles": [f"ROLE_{role}"],
+        "type": token_type,
+        "iat": int(now.timestamp()),
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
+
+
+def create_access_token(username: str, role: str) -> str:
+    return _create_token(username, role, "access", settings.access_token_expiration_ms)
+
+
+def create_refresh_token(username: str, role: str) -> str:
+    return _create_token(username, role, "refresh", settings.refresh_token_expiration_ms)
+
+
+def decode_token(token: str, expected_type: str) -> dict:
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
+    except JWTError:
+        raise ApiError(401, "INVALID_TOKEN", "Invalid or expired token")
+    if payload.get("type") != expected_type:
+        raise ApiError(401, "INVALID_TOKEN", "Invalid or expired token")
+    return payload
+
+
+def get_current_user(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise ApiError(401, "UNAUTHORIZED", "Missing or invalid Authorization header")
+    token = authorization.split(" ", 1)[1]
+    payload = decode_token(token, "access")
+    return {"username": payload["sub"], "roles": payload.get("roles", [])}
+
+
+def require_roles(*roles: str):
+    """FastAPI dependency mirroring @PreAuthorize("hasAnyRole(...)")."""
+    allowed = {f"ROLE_{r}" for r in roles}
+
+    def _check(user: dict = Depends(get_current_user)) -> dict:
+        if not allowed.intersection(user["roles"]):
+            raise ApiError(403, "FORBIDDEN", "You do not have permission to perform this action")
+        return user
+
+    return _check
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\app\seed.py
+"""Idempotent demo-data seeding, equivalent to the Java services' V2__seed_data.sql files."""
+from sqlalchemy.orm import Session
+
+from app.models import CaseStudy, CompanyInfo, Industry, ServiceOffering, Testimonial, User
+
+# Same BCrypt hashes as the original Flyway seed data - demo credentials are unchanged
+# (admin/admin123, editor/editor123). BCrypt hashes are portable across languages.
+ADMIN_HASH = "$2b$10$RO6fbxFi5y0VW6XjeVO2X.edAx3TSZFxU2hterHektIJvqpQ22wx6"
+EDITOR_HASH = "$2b$10$612WWFy7jKg5hnX4hSZ5TuMsm3wFFvPt4DVPqagz1HxOOjVPQsMem"
+
+
+def seed_if_empty(db: Session) -> None:
+    if not db.query(User).first():
+        db.add_all([
+            User(username="admin", password=ADMIN_HASH, role="ADMIN", status="ACTIVE"),
+            User(username="editor", password=EDITOR_HASH, role="EDITOR", status="ACTIVE"),
+        ])
+
+    if not db.query(CompanyInfo).first():
+        db.add(CompanyInfo(
+            name="AIS - Artificial Intelligent Solutions",
+            tagline="Custom AI Agents that increase ROI and reduce manual workload",
+            mission="Empower organizations with AI agents tailored to their operations.",
+            vision="A world where every organization has an AI teammate.",
+            founder_bio="Solution architect specializing in applied AI for education, "
+                        "manufacturing, and retail.",
+            address="Remote-first", phone="+1-000-000-0000",
+            email="hello@ais.example", linkedin_url="https://linkedin.com/company/ais",
+        ))
+
+    if not db.query(ServiceOffering).first():
+        db.add_all([
+            ServiceOffering(step_number=1, title="Design Phase",
+                             description="Discovery workshops and solution architecture.",
+                             deliverables="Architecture doc, roadmap", estimated_duration="2 weeks"),
+            ServiceOffering(step_number=2, title="Documentation Phase",
+                             description="Functional and technical specifications.",
+                             deliverables="FSD, TSD", estimated_duration="1 week"),
+            ServiceOffering(step_number=3, title="Backend Development",
+                             description="API and data platform build-out.",
+                             deliverables="Deployed backend services", estimated_duration="4 weeks"),
+            ServiceOffering(step_number=4, title="Frontend Development",
+                             description="User-facing application build-out.",
+                             deliverables="Deployed frontend application", estimated_duration="3 weeks"),
+        ])
+
+    if not db.query(Industry).first():
+        industries = [
+            Industry(name="College", description="Higher education institutions.",
+                      pain_points="Manual admissions and student support.",
+                      how_ai_helps="Automates admissions triage and helpdesk queries."),
+            Industry(name="School", description="K-12 schools.",
+                      pain_points="Repetitive parent/student queries.",
+                      how_ai_helps="Handles FAQs and routes escalations."),
+            Industry(name="Factory", description="Manufacturing facilities.",
+                      pain_points="Manual quality/maintenance logging.",
+                      how_ai_helps="Automates inspection logging and alerts."),
+            Industry(name="Shopping Mall", description="Retail/shopping centers.",
+                      pain_points="High-volume visitor questions.",
+                      how_ai_helps="Automates visitor assistance and directory lookups."),
+        ]
+        db.add_all(industries)
+        db.flush()
+        db.add_all([
+            CaseStudy(industry_id=industries[0].id, client_type="College",
+                      challenge="High admissions inquiry volume.",
+                      solution="Deployed an admissions AI agent.",
+                      tech_stack="FastAPI, Postgres", results="40% faster response time."),
+            CaseStudy(industry_id=industries[2].id, client_type="Factory",
+                      challenge="Manual inspection logging.",
+                      solution="Deployed a quality-inspection AI agent.",
+                      tech_stack="FastAPI, Postgres", results="25% fewer missed defects."),
+        ])
+        db.add_all([
+            Testimonial(client_name="Jane Doe", organization="Greenfield College",
+                        designation="Registrar", rating=5,
+                        testimonial_text="The admissions agent transformed our intake process."),
+            Testimonial(client_name="John Smith", organization="Nexus Auto Components",
+                        designation="Plant Manager", rating=4,
+                        testimonial_text="Reduced our inspection backlog significantly."),
+        ])
+
+    db.commit()
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\Dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+-----------------------------------------------
+C:\ws\agent\website-ais\backend-python\requirements.txt
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+pydantic==2.9.2
+pydantic-settings==2.5.2
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.9
+email-validator==2.2.0
